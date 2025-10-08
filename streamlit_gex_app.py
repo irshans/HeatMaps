@@ -206,7 +206,7 @@ def plot_heatmap(gex_df, ticker, S):
         [0.50, 'rgb(30, 90, 80)'],     # Deep blue-green neutral
         [0.65, 'rgb(45, 110, 80)'],    # Forest green
         [0.85, 'rgb(80, 130, 70)'],    # Muted green
-        [1.00, 'rgb(255, 255, 0)']   # Soft gold (highest positive)
+        [1.00, 'rgb(255, 230, 0)']   # Soft gold (highest positive)
     ]
 
     # Plotly Heatmap
