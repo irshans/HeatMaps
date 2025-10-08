@@ -189,13 +189,24 @@ def plot_heatmap(gex_df, ticker, S):
                 row_text.append(f"${sign}{abs(gex):,.0f}")
         text_annotations.append(row_text)
 
-    # Normalize each column (expiration) independently for color scaling
-    # But keep negatives as purple and positives as yellow
+    # Create a signed version of the data based on ATM
+    # Strikes below ATM get negative values, strikes above ATM stay positive
     z_data = pivot_gex.values.copy()
-    z_normalized = np.zeros_like(z_data)
+    z_signed = np.zeros_like(z_data)
     
-    for col_idx in range(z_data.shape[1]):
-        col_data = z_data[:, col_idx]
+    for i, strike in enumerate(y_strikes):
+        if strike <= S:
+            # Below or at ATM - make values negative
+            z_signed[i, :] = -z_data[i, :]
+        else:
+            # Above ATM - keep positive
+            z_signed[i, :] = z_data[i, :]
+    
+    # Normalize each column independently, preserving sign
+    z_normalized = np.zeros_like(z_signed)
+    
+    for col_idx in range(z_signed.shape[1]):
+        col_data = z_signed[:, col_idx]
         
         # Find the max absolute value for this column
         max_abs = np.abs(col_data).max()
@@ -207,7 +218,6 @@ def plot_heatmap(gex_df, ticker, S):
             z_normalized[:, col_idx] = 0
     
     # Create single heatmap with purple-blue-yellow gradient
-    # -1 = deep purple (most negative), 0 = blue (neutral), 1 = bright yellow (most positive)
     fig = go.Figure()
     
     fig.add_trace(go.Heatmap(
@@ -218,15 +228,15 @@ def plot_heatmap(gex_df, ticker, S):
         texttemplate="%{text}",
         textfont={"size": 10, "color": "white"},
         colorscale=[
-            [0, 'rgb(75, 0, 130)'],      # Deep purple (most negative)
-            [0.5, 'rgb(30, 60, 114)'],   # Blue (zero/neutral)
-            [1, 'rgb(255, 223, 0)']      # Bright yellow (most positive)
+            [0, 'rgb(75, 0, 130)'],      # Deep purple (below ATM, high GEX)
+            [0.5, 'rgb(30, 60, 114)'],   # Blue (neutral/low GEX)
+            [1, 'rgb(255, 223, 0)']      # Bright yellow (above ATM, high GEX)
         ],
         zmid=0,  # Center the color scale at zero
         showscale=True,
         colorbar=dict(
             title="Relative<br>GEX",
-            ticktext=["Most Negative", "Neutral", "Most Positive"],
+            ticktext=["Below ATM (High)", "Low GEX", "Above ATM (High)"],
             tickvals=[-1, 0, 1]
         ),
         customdata=z_data,
