@@ -159,9 +159,8 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
 # Plot heatmap
 # -------------------------
 def plot_heatmap(gex_df, ticker, S):
-    # Don't convert expiry to datetime - keep as string
+    # Sort data
     gex_df = gex_df.sort_values("expiry")
-
     pivot_gex = gex_df.pivot_table(
         index="strike",
         columns="expiry",
@@ -169,14 +168,12 @@ def plot_heatmap(gex_df, ticker, S):
         aggfunc="sum",
         fill_value=0
     )
-
-    # Sort strikes descending (high to low)
     pivot_gex = pivot_gex.sort_index(ascending=False)
 
     y_strikes = list(pivot_gex.index)
     x_exps = list(pivot_gex.columns)
-    
-    # Create text annotations for GEX values
+
+    # Text annotations
     text_annotations = []
     for i, strike in enumerate(y_strikes):
         row_text = []
@@ -188,38 +185,31 @@ def plot_heatmap(gex_df, ticker, S):
                 row_text.append(f"${sign}{abs(gex):,.0f}")
         text_annotations.append(row_text)
 
-    # Signed version of data (below ATM negative)
+    # Signed GEX (negative below ATM)
     z_data = pivot_gex.values.copy()
     z_signed = np.zeros_like(z_data)
     for i, strike in enumerate(y_strikes):
-        if strike <= S:
-            z_signed[i, :] = -z_data[i, :]
-        else:
-            z_signed[i, :] = z_data[i, :]
+        z_signed[i, :] = -z_data[i, :] if strike <= S else z_data[i, :]
 
-    # Normalize each column independently to keep visual balance
+    # Normalize per expiration column
     z_normalized = np.zeros_like(z_signed)
     for col_idx in range(z_signed.shape[1]):
         col_data = z_signed[:, col_idx]
         max_abs = np.abs(col_data).max()
-        if max_abs > 0:
-            z_normalized[:, col_idx] = col_data / max_abs
-        else:
-            z_normalized[:, col_idx] = 0
+        z_normalized[:, col_idx] = col_data / max_abs if max_abs > 0 else 0
 
-    # --- NEW COLORSCHEME ---
-    # Soft, neutral blues and greens in the middle.
-    # Deep purple for most negative, warm yellow for most positive.
+    # --- DARKER MUTED COLOR PALETTE ---
     custom_colorscale = [
-        [0.00, 'rgb(64, 0, 128)'],     # Deep purple - strongest negative GEX
-        [0.15, 'rgb(40, 60, 110)'],    # Muted indigo
-        [0.35, 'rgb(60, 110, 130)'],   # Soft blue
-        [0.50, 'rgb(90, 150, 120)'],   # Blue-green neutral zone
-        [0.65, 'rgb(130, 180, 100)'],  # Light green
-        [0.85, 'rgb(200, 210, 120)'],  # Pale yellow-green
-        [1.00, 'rgb(255, 230, 90)']    # Bright yellow - strongest positive GEX
+        [0.00, 'rgb(40, 10, 60)'],     # Deep purple (strongest negative)
+        [0.15, 'rgb(20, 40, 80)'],     # Dark navy blue
+        [0.35, 'rgb(25, 70, 85)'],     # Muted teal
+        [0.50, 'rgb(30, 90, 80)'],     # Deep blue-green neutral
+        [0.65, 'rgb(45, 110, 80)'],    # Forest green
+        [0.85, 'rgb(80, 130, 70)'],    # Muted green
+        [1.00, 'rgb(180, 180, 100)']   # Soft gold (highest positive)
     ]
 
+    # Plotly Heatmap
     fig = go.Figure()
     fig.add_trace(go.Heatmap(
         z=z_normalized,
@@ -240,7 +230,7 @@ def plot_heatmap(gex_df, ticker, S):
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{customdata:,.0f}<extra></extra>"
     ))
 
-    # Highlight ATM strike
+    # Highlight ATM
     fig.add_hline(
         y=S,
         line_dash="dash",
@@ -249,6 +239,7 @@ def plot_heatmap(gex_df, ticker, S):
         annotation_position="top right"
     )
 
+    # Layout
     fig.update_layout(
         title=f"{ticker} - Gamma Exposure Heatmap",
         xaxis_title="Expiry",
@@ -266,7 +257,6 @@ def plot_heatmap(gex_df, ticker, S):
         font=dict(color="white")
     )
     return fig
-
 
 # -------------------------
 # STREAMLIT APP
