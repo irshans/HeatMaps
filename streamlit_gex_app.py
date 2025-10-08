@@ -245,13 +245,45 @@ def plot_heatmap(gex_df, ticker, S):
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{customdata:.0f}<extra></extra>"
     ))
 
-    # Highlight ATM strike
-    fig.add_hline(
+    # Highlight ATM with arrows on both sides
+    # Right side arrow
+    fig.add_annotation(
+        x=1.02,
         y=S,
-        line_dash="dash",
-        line_color="red",
-        annotation_text="ATM",
-        annotation_position="top right"
+        xref="paper",
+        yref="y",
+        text=f"Current: ${S:.2f}",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1.5,
+        arrowwidth=2,
+        arrowcolor="red",
+        ax=40,
+        ay=0,
+        font=dict(size=12, color="red"),
+        bgcolor="rgba(0,0,0,0.7)",
+        bordercolor="red",
+        borderwidth=1
+    )
+
+    # Left side arrow
+    fig.add_annotation(
+        x=-0.02,
+        y=S,
+        xref="paper",
+        yref="y",
+        text=f"${S:.2f}",
+        showarrow=True,
+        arrowhead=2,
+        arrowsize=1.5,
+        arrowwidth=2,
+        arrowcolor="red",
+        ax=-40,
+        ay=0,
+        font=dict(size=12, color="red"),
+        bgcolor="rgba(0,0,0,0.7)",
+        bordercolor="red",
+        borderwidth=1
     )
 
     fig.update_layout(
