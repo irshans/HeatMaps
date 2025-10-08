@@ -247,18 +247,27 @@ def plot_heatmap(gex_df, ticker, S):
 
     # Highlight ATM with arrow
 
+    # Thin line across at ATM
+    fig.add_hline(
+        y=S,
+        line_width=1,
+        line_color="red",
+        opacity=0.5
+    )
+
+    # Arrow on right side
     fig.add_annotation(
-        x=-0.02,
+        x=1.02,
         y=S,
         xref="paper",
         yref="y",
-        text=f"${S:.2f}",
+        text=f"Current: ${S:.2f}",
         showarrow=True,
         arrowhead=2,
-        arrowsize=2.5,
-        arrowwidth=1,
+        arrowsize=1.5,
+        arrowwidth=2,
         arrowcolor="red",
-        ax=-40,
+        ax=40,
         ay=0,
         font=dict(size=12, color="red"),
         bgcolor="rgba(0,0,0,0.7)",
