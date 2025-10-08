@@ -229,8 +229,10 @@ def plot_heatmap(gex_df, ticker, S):
         textfont={"size": 10, "color": "white"},
         colorscale=[
             [0, 'rgb(75, 0, 130)'],      # Deep purple (below ATM, high GEX)
-            [0.5, 'rgb(30, 60, 114)'],   # Blue (neutral/low GEX)
-            [1, 'rgb(255, 223, 0)']      # Bright yellow (above ATM, high GEX)
+            [0.4, 'rgb(30, 60, 114)'],   # Blue (low GEX)
+            [0.5, 'rgb(50, 150, 100)'],  # Teal/Green (moderate positive)
+            [0.7, 'rgb(100, 200, 80)'],  # Light green (good positive)
+            [1, 'rgb(255, 223, 0)']      # Bright yellow (highest above ATM)
         ],
         zmid=0,  # Center the color scale at zero
         showscale=True,
