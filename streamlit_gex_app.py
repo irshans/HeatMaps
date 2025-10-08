@@ -255,7 +255,7 @@ def plot_heatmap(gex_df, ticker, S):
         text=f"${S:.2f}",
         showarrow=True,
         arrowhead=2,
-        arrowsize=1.5,
+        arrowsize=2.5,
         arrowwidth=1,
         arrowcolor="red",
         ax=-40,
