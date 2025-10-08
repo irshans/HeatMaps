@@ -190,21 +190,24 @@ def plot_heatmap(gex_df, ticker, S):
         text_annotations.append(row_text)
 
     # Normalize each column (expiration) independently for color scaling
+    # But keep negatives as purple and positives as yellow
     z_data = pivot_gex.values.copy()
     z_normalized = np.zeros_like(z_data)
     
     for col_idx in range(z_data.shape[1]):
         col_data = z_data[:, col_idx]
-        col_min = col_data.min()
-        col_max = col_data.max()
         
-        # Normalize to 0-1 range for this column
-        if col_max > col_min:
-            z_normalized[:, col_idx] = (col_data - col_min) / (col_max - col_min)
+        # Find the max absolute value for this column
+        max_abs = np.abs(col_data).max()
+        
+        if max_abs > 0:
+            # Normalize to -1 to 1 range, preserving sign
+            z_normalized[:, col_idx] = col_data / max_abs
         else:
             z_normalized[:, col_idx] = 0
     
-    # Create single heatmap with purple to yellow gradient
+    # Create single heatmap with purple-blue-yellow gradient
+    # -1 = deep purple (most negative), 0 = blue (neutral), 1 = bright yellow (most positive)
     fig = go.Figure()
     
     fig.add_trace(go.Heatmap(
@@ -215,15 +218,16 @@ def plot_heatmap(gex_df, ticker, S):
         texttemplate="%{text}",
         textfont={"size": 10, "color": "white"},
         colorscale=[
-            [0, 'rgb(75, 0, 130)'],      # Deep purple (lowest GEX)
-            [0.5, 'rgb(30, 60, 114)'],   # Blue (mid GEX)
-            [1, 'rgb(255, 223, 0)']      # Bright yellow (highest GEX)
+            [0, 'rgb(75, 0, 130)'],      # Deep purple (most negative)
+            [0.5, 'rgb(30, 60, 114)'],   # Blue (zero/neutral)
+            [1, 'rgb(255, 223, 0)']      # Bright yellow (most positive)
         ],
+        zmid=0,  # Center the color scale at zero
         showscale=True,
         colorbar=dict(
             title="Relative<br>GEX",
-            ticktext=["Low", "Mid", "High"],
-            tickvals=[0, 0.5, 1]
+            ticktext=["Most Negative", "Neutral", "Most Positive"],
+            tickvals=[-1, 0, 1]
         ),
         customdata=z_data,
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{customdata:.0f}<extra></extra>"
