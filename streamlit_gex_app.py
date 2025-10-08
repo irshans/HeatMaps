@@ -189,40 +189,44 @@ def plot_heatmap(gex_df, ticker, S):
                 row_text.append(f"${sign}{abs(gex):,.0f}")
         text_annotations.append(row_text)
 
-    # Split data into above and below ATM
+    # Normalize each column (expiration) independently for color scaling
     z_data = pivot_gex.values.copy()
-    z_above_atm = np.where(np.array(y_strikes)[:, None] > S, z_data, np.nan)
-    z_below_atm = np.where(np.array(y_strikes)[:, None] <= S, z_data, np.nan)
+    z_normalized = np.zeros_like(z_data)
     
-    # Create figure with two heatmap traces
+    for col_idx in range(z_data.shape[1]):
+        col_data = z_data[:, col_idx]
+        col_min = col_data.min()
+        col_max = col_data.max()
+        
+        # Normalize to 0-1 range for this column
+        if col_max > col_min:
+            z_normalized[:, col_idx] = (col_data - col_min) / (col_max - col_min)
+        else:
+            z_normalized[:, col_idx] = 0
+    
+    # Create single heatmap with purple to yellow gradient
     fig = go.Figure()
     
-    # Above ATM strikes - Blue to Yellow gradient
     fig.add_trace(go.Heatmap(
-        z=z_above_atm,
+        z=z_normalized,
         x=x_exps,
         y=y_strikes,
         text=text_annotations,
         texttemplate="%{text}",
         textfont={"size": 10, "color": "white"},
-        colorscale=[[0, 'rgb(30, 60, 114)'], [0.5, 'rgb(58, 175, 185)'], [1, 'rgb(255, 223, 0)']],
-        showscale=False,
-        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:.0f}<extra></extra>",
-        name="Above ATM"
-    ))
-    
-    # Below ATM strikes - Blue to Deep Purple gradient
-    fig.add_trace(go.Heatmap(
-        z=z_below_atm,
-        x=x_exps,
-        y=y_strikes,
-        text=text_annotations,
-        texttemplate="%{text}",
-        textfont={"size": 10, "color": "white"},
-        colorscale=[[0, 'rgb(30, 60, 114)'], [0.5, 'rgb(120, 80, 150)'], [1, 'rgb(75, 0, 130)']],
-        showscale=False,
-        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:.0f}<extra></extra>",
-        name="Below ATM"
+        colorscale=[
+            [0, 'rgb(75, 0, 130)'],      # Deep purple (lowest GEX)
+            [0.5, 'rgb(30, 60, 114)'],   # Blue (mid GEX)
+            [1, 'rgb(255, 223, 0)']      # Bright yellow (highest GEX)
+        ],
+        showscale=True,
+        colorbar=dict(
+            title="Relative<br>GEX",
+            ticktext=["Low", "Mid", "High"],
+            tickvals=[0, 0.5, 1]
+        ),
+        customdata=z_data,
+        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{customdata:.0f}<extra></extra>"
     ))
 
     # Highlight ATM strike
