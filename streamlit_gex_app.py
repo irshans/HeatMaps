@@ -1,19 +1,3 @@
-"""
-Streamlit Gamma Exposure Heatmap App
-
-Installation:
-    pip install streamlit yfinance pandas numpy plotly
-
-Run locally:
-    streamlit run streamlit_gex_app.py
-
-Deploy to Streamlit Cloud (free):
-    1. Push this file to GitHub
-    2. Go to share.streamlit.io
-    3. Connect your GitHub repo
-    4. Deploy!
-"""
-
 import streamlit as st
 import math
 import pandas as pd
@@ -232,7 +216,7 @@ def plot_heatmap(gex_df, ticker, S):
             [0.4, 'rgb(30, 60, 114)'],   # Blue (low GEX)
             [0.5, 'rgb(50, 150, 100)'],  # Teal/Green (moderate positive)
             [0.7, 'rgb(100, 200, 80)'],  # Light green (good positive)
-            [1, 'rgb(255, 223, 0)']      # Bright yellow (highest above ATM)
+            [1, 'rgb(190, 50, 50)']      # Bright yellow (highest above ATM)
         ],
         zmid=0,  # Center the color scale at zero
         showscale=True,
@@ -245,34 +229,14 @@ def plot_heatmap(gex_df, ticker, S):
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{customdata:.0f}<extra></extra>"
     ))
 
-    # Highlight ATM with arrow
-
-    # Thin line across at ATM
+    # Highlight ATM strike
     fig.add_hline(
         y=S,
+        line_dash="solid",
         line_width=1,
         line_color="red",
-        opacity=0.5
-    )
-
-    # Arrow on right side
-    fig.add_annotation(
-        x=1.02,
-        y=S,
-        xref="paper",
-        yref="y",
-        text=f"Current: ${S:.2f}",
-        showarrow=True,
-        arrowhead=2,
-        arrowsize=1.5,
-        arrowwidth=2,
-        arrowcolor="red",
-        ax=40,
-        ay=0,
-        font=dict(size=12, color="red"),
-        bgcolor="rgba(0,0,0,0.7)",
-        bordercolor="red",
-        borderwidth=1
+        annotation_text="ATM",
+        annotation_position="top right"
     )
 
     fig.update_layout(
@@ -335,23 +299,54 @@ def main():
                     st.error("No gamma exposure computed.")
                     return
                 
-                # Aggregate and plot
+                # Aggregate
                 agg = gex.groupby(["strike", "expiry"]).agg({
                     "gex_total": "sum",
                     "premium": "mean"
                 }).reset_index()
                 
-                fig = plot_heatmap(agg, ticker, S)
-                st.plotly_chart(fig, use_container_width=True)
+                # Calculate shared metrics once
+                call_oi = gex[gex['option_type'] == 'call']['open_interest'].sum()
+                put_oi = gex[gex['option_type'] == 'put']['open_interest'].sum()
+                pc_ratio = put_oi / call_oi if call_oi > 0 else 0
+                call_gex = gex[gex['option_type'] == 'call']['gex_total'].sum()
+                put_gex = gex[gex['option_type'] == 'put']['gex_total'].sum()
                 
-                # Summary stats
-                col1, col2, col3 = st.columns(3)
+                # Display summary stats on two lines
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total GEX", f"${agg['gex_total'].sum():,.0f}")
                 with col2:
-                    st.metric("Max Strike", f"${agg['strike'].max():.0f}")
+                    pc_color = "🔴" if pc_ratio > 1 else "🟢"
+                    st.metric("Put/Call Ratio", f"{pc_color} {pc_ratio:.2f}")
                 with col3:
+                    st.metric("Call GEX", f"${call_gex:,.0f}")
+                with col4:
+                    st.metric("Put GEX", f"${put_gex:,.0f}")
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Total Open Interest", f"{int(call_oi + put_oi):,}")
+                with col_b:
+                    st.metric("Max Strike", f"${agg['strike'].max():.0f}")
+                with col_c:
                     st.metric("Min Strike", f"${agg['strike'].min():.0f}")
+                
+                # Interpretation
+                st.markdown("---")
+                st.info(f"""
+                **Put/Call Ratio Interpretation:**
+                - **Current: {pc_ratio:.2f}** {'(Bearish - More Puts)' if pc_ratio > 1 else '(Bullish - More Calls)'}
+                - Ratio > 1.0: More put contracts than calls (bearish sentiment)
+                - Ratio < 1.0: More call contracts than puts (bullish sentiment)
+                - Ratio ≈ 1.0: Balanced sentiment
+                """)
+
+                # Plot heatmap
+                fig = plot_heatmap(agg, ticker, S)
+                st.plotly_chart(fig, use_container_width=True)
+                
+
                 
         except Exception as e:
             st.error(f"Error: {str(e)}")
