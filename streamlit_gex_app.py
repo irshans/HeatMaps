@@ -75,7 +75,6 @@ def compute_gex(df, S, strike_range):
 def plot_analysis(gex_df, ticker, S, sensitivity):
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
     z_raw = pivot.values
-    # Power scale for visual pop
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / sensitivity))
     x_labels, y_labels = pivot.columns, pivot.index
     
@@ -90,14 +89,12 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
             val = z_raw[i, j]
             if val == 0: continue
             
-            # Format text
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
             
             # Add the STAR to the highest value text
             if (i, j) == max_idx:
                 txt = f"★ {txt}"
             
-            # Contrast Logic
             color = "black" if (np.abs(z_scaled[i,j]) > np.max(np.abs(z_scaled)) * 0.6) else "white"
             
             annotations.append(dict(
@@ -109,13 +106,8 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
     fig = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labels, y=y_labels,
         colorscale=[
-            [0.0, '#32005A'],    # Dark Purple
-            [0.25, '#BF00FF'],   # Bright Purple
-            [0.48, '#001E00'],   # Dark Green Edge
-            [0.5, '#00C800'],    # Pure Green Center
-            [0.52, '#001E00'],   # Dark Green Edge
-            [0.75, '#FFB400'],   # Gold
-            [1.0, '#FFFFB4']     # Light Yellow
+            [0.0, '#32005A'], [0.25, '#BF00FF'], [0.48, '#001E00'], 
+            [0.5, '#00C800'], [0.52, '#001E00'], [0.75, '#FFB400'], [1.0, '#FFFFB4']
         ],
         zmid=0, showscale=True
     ))
@@ -125,8 +117,7 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
         type="rect",
         xref="x", yref="y",
         x0=max_idx[1] - 0.5, x1=max_idx[1] + 0.5,
-        y0=i_strike_val := (star_strike - 0.5), # Adjusting for visual alignment
-        y1=star_strike + 0.5,
+        y0=star_strike - 0.5, y1=star_strike + 0.5,
         line=dict(color="Cyan", width=4),
         fillcolor="rgba(0, 255, 255, 0.2)"
     )
@@ -136,7 +127,7 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
         template="plotly_dark", 
         height=850, 
         annotations=annotations,
-        xaxis={'type': 'category'} # Keep dates clean
+        xaxis={'type': 'category'} 
     )
     
     fig.add_hline(y=S, line_dash="dash", line_color="white", 
@@ -161,7 +152,7 @@ def main():
         hist = stock.history(period="1d")
         if not hist.empty:
             S = hist["Close"].iloc[-1]
-            with st.spinner(f"Analyzing {ticker} at ${S:.2f}..."):
+            with st.spinner(f"Analyzing {ticker}..."):
                 raw = fetch_options_yahoo(ticker, max_exp)
                 if not raw.empty:
                     gex_data = compute_gex(raw, S, s_range)
