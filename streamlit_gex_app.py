@@ -12,7 +12,7 @@ import time
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
 MAX_EXPIRATIONS_HARD_CAP = 10
-MAX_STRIKES_AROUND_ATM = 20  # above and below ATM
+MAX_STRIKES_AROUND_ATM = 20  # updated to 20
 
 # -------------------------
 # Black-Scholes & Greeks
@@ -135,10 +135,9 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
     return pd.DataFrame(rows)
 
 # -------------------------
-# Plot heatmap with text + star
+# Plot heatmap with color thresholds + star
 # -------------------------
 def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
-    # Limit strikes around ATM
     strikes_sorted = sorted(gex_df['strike'].unique())
     closest_idx = np.abs(np.array(strikes_sorted)-S).argmin()
     start = max(0, closest_idx - max_strikes)
@@ -158,35 +157,49 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     expiries = list(pivot.columns)
     z = pivot.values
 
-    # Text for cells
-    text_matrix = [[f"${v:,.0f}" for v in row] for row in z]
+    # Identify max absolute GEX
+    max_idx = np.unravel_index(np.argmax(np.abs(z)), z.shape)
 
-    # Heatmap trace
-    heatmap = go.Heatmap(
+    # Prepare text matrix with star on max absolute GEX
+    text_matrix = []
+    for i, row in enumerate(z):
+        row_text = []
+        for j, val in enumerate(row):
+            val_str = f"${val:,.0f}"
+            if (i, j) == max_idx:
+                val_str += " ★"
+            row_text.append(val_str)
+        text_matrix.append(row_text)
+
+    # Build custom color scale
+    colors = []
+    for row in z:
+        color_row = []
+        for val in row:
+            if val <= -1_000_000:
+                color_row.append("rgb(75,0,130)")  # deep purple
+            elif val >= 1_000_000:
+                color_row.append("rgb(255,215,0)")  # gold/yellow
+            else:
+                color_row.append("rgb(0,128,0)")  # green
+        colors.append(color_row)
+
+    fig = go.Figure(data=go.Heatmap(
         z=z,
         x=expiries,
         y=strikes,
         text=text_matrix,
         texttemplate="%{text}",
         textfont=dict(size=10, color="white"),
-        colorscale='RdYlGn_r',
-        zmid=0,
-        colorbar=dict(title='GEX'),
-        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>"
-    )
-
-    fig = go.Figure(data=[heatmap])
-
-    # Star at max absolute GEX
-    max_idx = np.unravel_index(np.argmax(np.abs(z)), z.shape)
-    fig.add_trace(go.Scatter(
-        x=[expiries[max_idx[1]]],
-        y=[strikes[max_idx[0]]],
-        text=["★"],
-        mode="text",
-        textfont=dict(size=20, color="white"),
-        showlegend=False,
-        hoverinfo='skip'
+        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
+        showscale=True,
+        colorscale=None,
+        zmin=np.min(z),
+        zmax=np.max(z),
+        xgap=1,
+        ygap=1,
+        zsmooth=False,
+        colors=colors
     ))
 
     # ATM line
