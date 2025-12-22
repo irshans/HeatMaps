@@ -120,18 +120,16 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=30):
 # Plotting
 # -------------------------
 def plot_charts(gex_df, ticker, S):
-    # Pivot for Heatmap
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
     
     z = pivot.values
     expiries = list(pivot.columns)
     strikes = list(pivot.index)
 
-    # Find the absolute max value index for the star
+    # Star logic
     abs_z = np.abs(z)
     max_idx = np.unravel_index(np.argmax(abs_z), z.shape)
 
-    # Create Text Matrix with Star logic
     text_matrix = []
     for i in range(len(strikes)):
         row_text = []
@@ -143,29 +141,34 @@ def plot_charts(gex_df, ticker, S):
             row_text.append(val_str)
         text_matrix.append(row_text)
 
-    # Restoring Purple/Yellow Colorscale
-    colorscale = [
-        [0.0, 'rgb(75,0,130)'],   # Deep Purple (Negative GEX)
-        [0.5, 'rgb(20,20,20)'],    # Dark Neutral (Near Zero)
-        [1.0, 'rgb(255,215,0)']    # Yellow (Positive GEX)
+    # CUSTOM COLOR SCHEME: Purple (Negative) -> Green (Middle/Near Zero) -> Yellow (High Positive)
+    # We use a 5-point scale to ensure Green is the "neutral" zone
+    custom_colorscale = [
+        [0.0, 'rgb(48, 0, 77)'],    # Dark Purple (Extreme Negative)
+        [0.25, 'rgb(149, 117, 205)'], # Light Purple (Low Negative)
+        [0.5, 'rgb(0, 100, 0)'],    # Dark Green (Zero/Middle)
+        [0.75, 'rgb(144, 238, 144)'], # Light Green (Low Positive)
+        [1.0, 'rgb(255, 215, 0)']    # Yellow (High Positive)
     ]
 
-    # 1. Heatmap
     fig_heat = go.Figure(data=go.Heatmap(
         z=z, x=expiries, y=strikes,
         text=text_matrix, texttemplate="%{text}",
         textfont={"size": 10, "color": "white"},
-        colorscale=colorscale, zmid=0, showscale=True
+        colorscale=custom_colorscale, 
+        zmid=0, # Forces the 0.5 color (Dark Green) to be at 0 GEX
+        showscale=True
     ))
-    fig_heat.add_hline(y=S, line_dash="dash", line_color="red", annotation_text="Spot")
+    
+    fig_heat.add_hline(y=S, line_dash="dash", line_color="white", annotation_text="Spot")
     fig_heat.update_layout(title=f"{ticker} Gamma Exposure Heatmap", height=800, template="plotly_dark")
 
-    # 2. Bar Chart (Aggregated GEX by Strike)
+    # Bar Chart
     strike_agg = gex_df.groupby('strike')['gex_total'].sum().reset_index()
     fig_bar = go.Figure()
     fig_bar.add_trace(go.Bar(
         x=strike_agg['strike'], y=strike_agg['gex_total'],
-        marker_color=['#4B0082' if x < 0 else '#FFD700' for x in strike_agg['gex_total']]
+        marker_color=['#9575CD' if x < 0 else '#90EE90' for x in strike_agg['gex_total']]
     ))
     fig_bar.add_vline(x=S, line_dash="dash", line_color="red", annotation_text="Spot")
     fig_bar.update_layout(title=f"Total Gamma Concentration by Strike ({ticker})", xaxis_title="Strike", yaxis_title="Net GEX ($)", template="plotly_dark")
