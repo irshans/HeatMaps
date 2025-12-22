@@ -4,10 +4,9 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
-from datetime import datetime
 
 st.set_page_config(
-    page_title="Gamma Exposure Heatmap",
+    page_title="Gamma Exposure Analytics",
     page_icon="📊",
     layout="wide"
 )
@@ -87,29 +86,22 @@ def fetch_options_yahoo(ticker, max_expirations=5):
 # -------------------------
 def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=30):
     df = df.copy()
-    # Fill missing prices with best available
     df["mid_price"] = df[["bid", "ask", "lastPrice"]].bfill(axis=1).iloc[:, 0]
     
-    # Time logic fix: Use UTC to avoid local timezone offsets and add market close buffer
     df["expiration_dt"] = pd.to_datetime(df["expiration"])
     now = pd.Timestamp.now(tz='UTC').tz_localize(None)
-    
-    # Use 21:00 UTC (approx 4PM ET) to represent market close
     df["expiration_dt_with_time"] = df["expiration_dt"] + pd.Timedelta(hours=21)
     df["T"] = (df["expiration_dt_with_time"] - now).dt.total_seconds() / (365*24*3600)
     
-    # Filter for strike range and positive time to expiry
     df = df[(df["strike"] >= S - strike_range) & (df["strike"] <= S + strike_range)]
     df = df[df["T"] > 0]
 
     out_rows = []
     for _, row in df.iterrows():
-        K = float(row["strike"])
-        T = float(row["T"])
+        K, T = float(row["strike"]), float(row["T"])
         oi = float(row.get("openInterest") or 0.0)
         opt_type = row.get("option_type", "call").lower()
         mid = row.get("mid_price")
-
         b, a = row.get("bid"), row.get("ask")
         market_price = 0.5*(b+a) if (pd.notnull(b) and pd.notnull(a) and b > 0) else mid
         
@@ -118,111 +110,95 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=30):
             sigma = fallback_iv
 
         gamma = bs_gamma(S, K, r, q, sigma, T)
-        raw_dollar_gamma = gamma * S**2
-        gex_total = raw_dollar_gamma * CONTRACT_SIZE * oi * 0.01
-        
-        if opt_type == "put":
-            gex_total *= -1
+        gex_total = (gamma * S**2) * CONTRACT_SIZE * oi * 0.01
+        if opt_type == "put": gex_total *= -1
 
-        out_rows.append({
-            "strike": K,
-            "expiry": row["expiration"],
-            "option_type": opt_type,
-            "open_interest": oi,
-            "sigma": sigma,
-            "gex_total": gex_total,
-            "premium": mid if mid is not None else 0.0
-        })
+        out_rows.append({"strike": K, "expiry": row["expiration"], "option_type": opt_type, "gex_total": gex_total})
     return pd.DataFrame(out_rows)
 
 # -------------------------
-# Heatmap Plotting
+# Plotting
 # -------------------------
-def plot_heatmap(gex_df, ticker, S):
-    pivot = gex_df.pivot_table(
-        index='strike',
-        columns='expiry',
-        values='gex_total',
-        aggfunc='sum',
-        fill_value=0
-    ).sort_index(ascending=False)
-
+def plot_charts(gex_df, ticker, S):
+    # Pivot for Heatmap
+    pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
+    
     z = pivot.values
-    x = list(pivot.columns)
-    y = list(pivot.index)
+    expiries = list(pivot.columns)
+    strikes = list(pivot.index)
 
-    # Create text matrix for display
-    text_matrix = [[f"${v:,.0f}" for v in row] for row in z]
+    # Find the absolute max value index for the star
+    abs_z = np.abs(z)
+    max_idx = np.unravel_index(np.argmax(abs_z), z.shape)
 
+    # Create Text Matrix with Star logic
+    text_matrix = []
+    for i in range(len(strikes)):
+        row_text = []
+        for j in range(len(expiries)):
+            val = z[i, j]
+            val_str = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
+            if (i, j) == max_idx:
+                val_str += " ★"
+            row_text.append(val_str)
+        text_matrix.append(row_text)
+
+    # Restoring Purple/Yellow Colorscale
     colorscale = [
-        [0.0, 'rgb(75,0,130)'],   # deep purple negative
-        [0.5, 'rgb(20,20,20)'],    # dark neutral
-        [1.0, 'rgb(255,215,0)']    # yellow positive
+        [0.0, 'rgb(75,0,130)'],   # Deep Purple (Negative GEX)
+        [0.5, 'rgb(20,20,20)'],    # Dark Neutral (Near Zero)
+        [1.0, 'rgb(255,215,0)']    # Yellow (Positive GEX)
     ]
 
-    fig = go.Figure(data=go.Heatmap(
-        z=z, x=x, y=y,
-        text=text_matrix,
-        texttemplate="%{text}",
-        textfont={"size": 10},
-        colorscale=colorscale,
-        zmid=0,
-        showscale=True
+    # 1. Heatmap
+    fig_heat = go.Figure(data=go.Heatmap(
+        z=z, x=expiries, y=strikes,
+        text=text_matrix, texttemplate="%{text}",
+        textfont={"size": 10, "color": "white"},
+        colorscale=colorscale, zmid=0, showscale=True
     ))
+    fig_heat.add_hline(y=S, line_dash="dash", line_color="red", annotation_text="Spot")
+    fig_heat.update_layout(title=f"{ticker} Gamma Exposure Heatmap", height=800, template="plotly_dark")
 
-    fig.add_hline(y=S, line_dash="dash", line_color="red", annotation_text="Spot")
-    
-    fig.update_layout(
-        title=f"{ticker} Net GEX Heatmap",
-        xaxis_title="Expiration Date",
-        yaxis_title="Strike Price",
-        height=800,
-        template="plotly_dark"
-    )
-    return fig
+    # 2. Bar Chart (Aggregated GEX by Strike)
+    strike_agg = gex_df.groupby('strike')['gex_total'].sum().reset_index()
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        x=strike_agg['strike'], y=strike_agg['gex_total'],
+        marker_color=['#4B0082' if x < 0 else '#FFD700' for x in strike_agg['gex_total']]
+    ))
+    fig_bar.add_vline(x=S, line_dash="dash", line_color="red", annotation_text="Spot")
+    fig_bar.update_layout(title=f"Total Gamma Concentration by Strike ({ticker})", xaxis_title="Strike", yaxis_title="Net GEX ($)", template="plotly_dark")
 
-# -------------------------
-# Main App
-# -------------------------
+    return fig_heat, fig_bar
+
 def main():
-    st.title("📊 Gamma Exposure Heatmap")
-
     st.sidebar.header("⚙️ Settings")
     ticker = st.sidebar.text_input("Ticker Symbol", "TSLA").upper()
-    
-    # UPDATED SLIDERS
     max_expirations = st.sidebar.slider("Number of Expirations", 1, 10, 5)
     strike_range = st.sidebar.slider("Strike Range ($)", 5, 50, 30)
 
-    if st.sidebar.button("🚀 Generate Heatmap", type="primary"):
-        try:
-            with st.spinner(f"Loading {ticker} data..."):
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period="1d")
-                if hist.empty:
-                    st.error("Could not fetch stock price. Check ticker symbol.")
-                    return
-                
-                S = hist["Close"].iloc[-1]
-                st.metric("Current Spot Price", f"${S:.2f}")
+    if st.sidebar.button("🚀 Generate Analysis", type="primary"):
+        with st.spinner("Processing..."):
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period="1d")
+            if hist.empty:
+                st.error("Ticker not found."); return
+            
+            S = hist["Close"].iloc[-1]
+            df = fetch_options_yahoo(ticker, max_expirations)
+            gex = compute_gex(df, S, strike_range=strike_range)
 
-                df = fetch_options_yahoo(ticker, max_expirations=max_expirations)
-                if df.empty:
-                    st.error("No options data found.")
-                    return
+            st.header(f"Gamma Analysis: {ticker} @ ${S:.2f}")
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Net GEX", f"${gex['gex_total'].sum():,.0f}")
+            c2.metric("Call GEX", f"${gex[gex['gex_total']>0]['gex_total'].sum():,.0f}")
+            c3.metric("Put GEX", f"${gex[gex['gex_total']<0]['gex_total'].sum():,.0f}")
 
-                gex = compute_gex(df, S, strike_range=strike_range)
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total GEX", f"${gex['gex_total'].sum():,.0f}")
-                col2.metric("Call GEX", f"${gex[gex['option_type']=='call']['gex_total'].sum():,.0f}")
-                col3.metric("Put GEX", f"${gex[gex['option_type']=='put']['gex_total'].sum():,.0f}")
-
-                fig = plot_heatmap(gex, ticker, S)
-                st.plotly_chart(fig, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Error processing data: {e}")
+            fig_heat, fig_bar = plot_charts(gex, ticker, S)
+            st.plotly_chart(fig_heat, use_container_width=True)
+            st.plotly_chart(fig_bar, use_container_width=True)
 
 if __name__ == "__main__":
     main()
