@@ -12,14 +12,33 @@ CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
 
 # -------------------------
-# Improved Date Logic
+# Holiday & Weekend Logic
 # -------------------------
-def fix_expiration_date(date_str):
+def get_actual_trading_day(date_str):
+    """
+    Ensures the date is a valid trading day. 
+    Rolls back weekends AND provides a mechanism to skip holidays if they 
+    fall on weekdays (e.g., Christmas/New Years).
+    """
     dt = pd.to_datetime(date_str)
-    if dt.weekday() == 6: # Sunday
-        dt = dt - timedelta(days=2)
-    elif dt.weekday() == 5: # Saturday
-        dt = dt - timedelta(days=1)
+    
+    # List of major US Market Holidays (2024-2025 simplified)
+    # You can add specific dates here if Yahoo returns them
+    holidays = [
+        '2024-12-25', '2025-01-01', '2025-07-04', '2025-12-25'
+    ]
+    
+    # 1. Roll back weekends
+    while dt.weekday() > 4: # 5=Sat, 6=Sun
+        dt -= timedelta(days=1)
+    
+    # 2. Roll back if it lands on a known holiday
+    while dt.strftime('%Y-%m-%d') in holidays:
+        dt -= timedelta(days=1)
+        # Re-check weekend after rolling back from a holiday
+        while dt.weekday() > 4:
+            dt -= timedelta(days=1)
+            
     return dt.strftime('%Y-%m-%d')
 
 # -------------------------
@@ -40,10 +59,12 @@ def fetch_options_yahoo(ticker, max_expirations):
     except: return pd.DataFrame()
     
     dfs = []
-    for exp in exp_list:
+    for raw_exp in exp_list:
         try:
-            chain = stock.option_chain(exp)
-            trading_date = fix_expiration_date(exp)
+            chain = stock.option_chain(raw_exp)
+            # Use our new robust trading day logic
+            trading_date = get_actual_trading_day(raw_exp)
+            
             calls = chain.calls.assign(option_type="call", expiration=trading_date)
             puts = chain.puts.assign(option_type="put", expiration=trading_date)
             dfs.append(pd.concat([calls, puts], ignore_index=True))
@@ -78,18 +99,14 @@ def compute_gex(df, S, strike_range):
 def plot_analysis(gex_df, ticker, S, sensitivity):
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
     
-    # APPLY POWER SCALING to the Z-values for the heatmap colors only
-    # This stretches the mid-range values while keeping the real values for text/labels
     z_raw = pivot.values
-    # We use sign(z) * |z|^(1/sensitivity) to squash the extremes and pump the lows
     exponent = 1.0 / sensitivity
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** exponent)
 
     x_labels = pivot.columns
     y_labels = pivot.index
     
-    # For annotations, we still use the raw values
-    max_val = np.max(np.abs(z_raw)) if z_raw.size > 0 else 1
+    max_val_scaled = np.max(np.abs(z_scaled)) if z_scaled.size > 0 else 1
     max_idx = np.unravel_index(np.argmax(np.abs(z_raw)), z_raw.shape) if z_raw.size > 0 else (0,0)
 
     annotations = []
@@ -99,58 +116,41 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
             if val == 0: continue
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
             if (i, j) == max_idx: txt += " ★"
-            # Text contrast logic
-            color = "black" if (val > 0 and np.abs(z_scaled[i,j]) > np.max(np.abs(z_scaled))*0.5) else "white"
+            color = "black" if (np.abs(z_scaled[i,j]) > max_val_scaled * 0.6) else "white"
             annotations.append(dict(x=expiry, y=strike, text=txt, showarrow=False, font=dict(color=color, size=10)))
 
-    # Enhanced Diverging Colorscale
     custom_colorscale = [
-        [0.0, 'rgb(40, 0, 80)'],      # Deep Purple
-        [0.2, 'rgb(180, 0, 255)'],    # Electric Purple
-        [0.45, 'rgb(0, 40, 0)'],      # Dark Green
-        [0.5, 'rgb(0, 200, 0)'],      # Neutral Green
-        [0.55, 'rgb(0, 40, 0)'],      # Dark Green
-        [0.8, 'rgb(255, 200, 0)'],    # Gold
-        [1.0, 'rgb(255, 255, 150)']    # Neon Yellow
+        [0.0, 'rgb(50, 0, 90)'],      # Deep Dark Purple
+        [0.25, 'rgb(180, 0, 255)'],   # Electric Purple (Short Gamma)
+        [0.48, 'rgb(0, 30, 0)'],      # Dark Green Edge
+        [0.5, 'rgb(0, 200, 0)'],      # Pure Green (Neutral)
+        [0.52, 'rgb(0, 30, 0)'],      # Dark Green Edge
+        [0.75, 'rgb(255, 180, 0)'],   # Bright Gold (Long Gamma)
+        [1.0, 'rgb(255, 255, 180)']   # Neon Yellow
     ]
 
     fig_heat = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labels, y=y_labels,
-        colorscale=custom_colorscale, zmid=0, showscale=True,
-        colorbar=dict(title="Scaled GEX intensity")
+        colorscale=custom_colorscale, zmid=0, showscale=True
     ))
     
     fig_heat.update_layout(
-        title=f"{ticker} Net GEX Heatmap (Non-Linear Scale)", 
-        template="plotly_dark", height=850, annotations=annotations
+        title=f"{ticker} Gamma Map (Holiday/Weekend Corrected)", 
+        template="plotly_dark", height=850, annotations=annotations,
+        xaxis={'type': 'category'}
     )
     fig_heat.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text="SPOT")
 
-    # Bar Chart (Raw Values)
-    strike_agg = gex_df.groupby('strike')['gex_total'].sum().sort_index()
-    fig_bar = go.Figure(go.Bar(
-        x=strike_agg.index, y=strike_agg.values,
-        marker_color=['#B400FF' if x < 0 else '#FFD700' for x in strike_agg.values]
-    ))
-    fig_bar.add_vline(x=S, line_color="cyan", line_dash="dash", annotation_text="SPOT")
-    fig_bar.update_layout(title="Total Gamma Profile (Raw Value)", template="plotly_dark", height=400)
-
-    return fig_heat, fig_bar
+    return fig_heat
 
 def main():
     with st.sidebar:
-        st.header("Control Panel")
-        ticker = st.text_input("Ticker", "TSLA").upper()
-        max_exp = st.slider("Expirations", 1, 15, 5)
-        s_range = st.slider("Strike Range +/-", 5, 100, 40)
-        
-        st.markdown("---")
-        st.subheader("Visualization Scale")
-        # Higher sensitivity = more vibrant colors for small numbers
-        sensitivity = st.slider("Color Boost (Power Scale)", 1.0, 5.0, 2.5, step=0.5, 
-                                help="Increase this to make smaller GEX levels more visible.")
-        
-        run = st.button("Update Analysis", type="primary")
+        st.header("GEX Control")
+        ticker = st.text_input("Ticker", "SPY").upper()
+        max_exp = st.slider("Expirations", 1, 20, 10)
+        s_range = st.slider("Strike Range +/-", 5, 200, 50)
+        sensitivity = st.slider("Color Boost", 1.0, 5.0, 3.0)
+        run = st.button("Calculate GEX", type="primary")
 
     if run:
         stock = yf.Ticker(ticker)
@@ -161,10 +161,8 @@ def main():
             if not raw.empty:
                 gex_data = compute_gex(raw, S, s_range)
                 if not gex_data.empty:
-                    h_map, b_chart = plot_analysis(gex_data, ticker, S, sensitivity)
-                    st.plotly_chart(h_map, use_container_width=True)
-                    st.plotly_chart(b_chart, use_container_width=True)
-                else: st.warning("No data found.")
+                    st.plotly_chart(plot_analysis(gex_data, ticker, S, sensitivity), use_container_width=True)
+                else: st.warning("No data found for this range.")
             else: st.error("No options data.")
         else: st.error("Ticker not found.")
 
