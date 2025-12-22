@@ -58,7 +58,7 @@ def implied_vol_bisect(option_type, market_price, S, K, r, q, T, tol=1e-4, max_i
     return 0.5*(low+high)
 
 # -------------------------
-# Fetch options from Yahoo Finance
+# Fetch options from Yahoo Finance with retry
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_options_yahoo_safe(ticker, max_expirations=5, max_retries=3, delay=2):
@@ -135,7 +135,7 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
     return pd.DataFrame(rows)
 
 # -------------------------
-# Plot heatmap
+# Plot heatmap with text + star
 # -------------------------
 def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     # Limit strikes around ATM
@@ -158,31 +158,26 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     expiries = list(pivot.columns)
     z = pivot.values
 
-    # Build custom colorscale
-    colorscale = []
-    z_flat = z.flatten()
-    for val in np.sort(np.unique(z_flat)):
-        if val < -1_000_000:
-            colorscale.append([0.0, 'rgb(75,0,130)'])  # purple
-        elif val > 1_000_000:
-            colorscale.append([1.0, 'rgb(255,215,0)'])  # yellow
-        else:
-            colorscale.append([0.5, 'rgb(50,205,50)'])  # green
+    # Text for cells
+    text_matrix = [[f"${v:,.0f}" for v in row] for row in z]
 
-    # Main heatmap
+    # Heatmap trace
     heatmap = go.Heatmap(
         z=z,
         x=expiries,
         y=strikes,
-        colorscale='RdYlGn_r',  # fallback to readable scale
-        colorbar=dict(title='GEX'),
+        text=text_matrix,
+        texttemplate="%{text}",
+        textfont=dict(size=10, color="white"),
+        colorscale='RdYlGn_r',
         zmid=0,
+        colorbar=dict(title='GEX'),
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>"
     )
 
     fig = go.Figure(data=[heatmap])
 
-    # Add star at max absolute GEX
+    # Star at max absolute GEX
     max_idx = np.unravel_index(np.argmax(np.abs(z)), z.shape)
     fig.add_trace(go.Scatter(
         x=[expiries[max_idx[1]]],
