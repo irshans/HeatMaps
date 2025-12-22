@@ -11,7 +11,8 @@ import time
 # -------------------------
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
-MAX_EXPIRATIONS_HARD_CAP = 10  # max allowed in slider
+MAX_EXPIRATIONS_HARD_CAP = 10
+MAX_STRIKES_AROUND_ATM = 5  # above and below ATM
 
 # -------------------------
 # Black-Scholes & Greeks
@@ -57,7 +58,7 @@ def implied_vol_bisect(option_type, market_price, S, K, r, q, T, tol=1e-4, max_i
     return 0.5*(low+high)
 
 # -------------------------
-# Fetch options from Yahoo Finance with retries
+# Fetch options from Yahoo Finance
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_options_yahoo_safe(ticker, max_expirations=5, max_retries=3, delay=2):
@@ -117,7 +118,6 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
 
         gamma = bs_gamma(S, K, r, q, sigma, T)
         raw_dollar_gamma = gamma * S**2
-        # Apply sign: call=positive, put=negative
         sign = 1 if opt_type == "call" else -1
         gex_total = raw_dollar_gamma * CONTRACT_SIZE * oi * 0.01 * sign
 
@@ -137,12 +137,20 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
 # -------------------------
 # Plot heatmap
 # -------------------------
-def plot_heatmap(gex_df, ticker, S):
-    pivot = gex_df.pivot_table(
-        index="strike",
-        columns="expiry",
-        values="gex_total",
-        aggfunc="sum",
+def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
+    # Limit strikes around ATM
+    strikes_sorted = sorted(gex_df['strike'].unique())
+    closest_idx = np.abs(np.array(strikes_sorted)-S).argmin()
+    start = max(0, closest_idx - max_strikes)
+    end = min(len(strikes_sorted), closest_idx + max_strikes + 1)
+    strikes_to_use = strikes_sorted[start:end]
+    df_plot = gex_df[gex_df['strike'].isin(strikes_to_use)]
+
+    pivot = df_plot.pivot_table(
+        index='strike',
+        columns='expiry',
+        values='gex_total',
+        aggfunc='sum',
         fill_value=0
     ).sort_index(ascending=False)
 
@@ -150,48 +158,35 @@ def plot_heatmap(gex_df, ticker, S):
     expiries = list(pivot.columns)
     z = pivot.values
 
-    # Highest absolute GEX
-    idx_flat = np.argmax(np.abs(z))
-    row_idx, col_idx = np.unravel_index(idx_flat, z.shape)
-    highest_strike = strikes[row_idx]
-    highest_expiry = expiries[col_idx]
+    # Build custom colorscale
+    colorscale = []
+    z_flat = z.flatten()
+    for val in np.sort(np.unique(z_flat)):
+        if val < -1_000_000:
+            colorscale.append([0.0, 'rgb(75,0,130)'])  # purple
+        elif val > 1_000_000:
+            colorscale.append([1.0, 'rgb(255,215,0)'])  # yellow
+        else:
+            colorscale.append([0.5, 'rgb(50,205,50)'])  # green
 
-    fig = go.Figure()
+    # Main heatmap
+    heatmap = go.Heatmap(
+        z=z,
+        x=expiries,
+        y=strikes,
+        colorscale='RdYlGn_r',  # fallback to readable scale
+        colorbar=dict(title='GEX'),
+        zmid=0,
+        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>"
+    )
 
-    # Draw colored rectangles
-    for i, strike in enumerate(strikes):
-        for j, expiry in enumerate(expiries):
-            val = z[i,j]
-            if val < -1_000_000:
-                color = 'rgb(75,0,130)'   # deep purple
-            elif val > 1_000_000:
-                color = 'rgb(255,215,0)'  # yellow
-            else:
-                color = 'rgb(50,205,50)'  # green
+    fig = go.Figure(data=[heatmap])
 
-            fig.add_shape(
-                type="rect",
-                x0=j-0.5, x1=j+0.5,
-                y0=i-0.5, y1=i+0.5,
-                xref='x', yref='y',
-                line=dict(width=1, color='black'),
-                fillcolor=color,
-            )
-
-            fig.add_trace(go.Scatter(
-                x=[expiry],
-                y=[strike],
-                text=[f"{int(val):,}"],
-                mode="text",
-                textfont=dict(color="white" if color!='rgb(50,205,50)' else "black", size=12),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-
-    # Star for highest absolute GEX
+    # Add star at max absolute GEX
+    max_idx = np.unravel_index(np.argmax(np.abs(z)), z.shape)
     fig.add_trace(go.Scatter(
-        x=[highest_expiry],
-        y=[highest_strike],
+        x=[expiries[max_idx[1]]],
+        y=[strikes[max_idx[0]]],
         text=["★"],
         mode="text",
         textfont=dict(size=20, color="white"),
@@ -202,28 +197,18 @@ def plot_heatmap(gex_df, ticker, S):
     # ATM line
     fig.add_hline(
         y=S,
-        line_color="red",
+        line_color='red',
         line_width=1,
-        annotation_text="ATM",
-        annotation_position="top right"
+        annotation_text='ATM',
+        annotation_position='top right'
     )
 
-    fig.update_yaxes(
-        tickvals=strikes,
-        ticktext=[str(s) for s in strikes],
-        autorange='reversed'
-    )
-    fig.update_xaxes(
-        tickvals=expiries,
-        ticktext=expiries
-    )
-
+    fig.update_yaxes(autorange='reversed')
     fig.update_layout(
         title=f"{ticker} – Net Gamma Exposure Heatmap",
-        xaxis_title="Expiry",
-        yaxis_title="Strike",
-        height=800,
-        showlegend=False
+        xaxis_title='Expiry',
+        yaxis_title='Strike',
+        height=800
     )
     return fig
 
@@ -246,11 +231,7 @@ def main():
 
                 df = fetch_options_yahoo_safe(ticker, max_expirations=max_expirations)
                 if df.empty:
-                    st.error(
-                        "⚠️ Could not fetch any options data.\n"
-                        "Yahoo Finance may be rate-limiting requests.\n"
-                        "Try again in a minute or reduce max expirations."
-                    )
+                    st.error("⚠️ Could not fetch any options data. Yahoo may be rate-limiting requests.")
                     return
 
                 gex = compute_gex(df, S, strike_range=strike_range)
