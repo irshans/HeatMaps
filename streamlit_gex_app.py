@@ -78,6 +78,7 @@ def compute_gex(df, S, strike_range):
 def plot_analysis(gex_df, ticker, S, sensitivity):
     strike_agg = gex_df.groupby('strike')['gex_total'].sum().sort_index()
     
+    # Flip Calculation
     flip_price = S
     for i in range(1, len(strike_agg)):
         if np.sign(strike_agg.values[i-1]) != np.sign(strike_agg.values[i]):
@@ -87,15 +88,23 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
     top_call_wall = strike_agg.idxmax()
     top_put_wall = strike_agg.idxmin()
     
-    # Create the Pivot Table
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
     
-    # Convert to pure numpy arrays for Plotly stability
-    z_raw_np = pivot.values.astype(float)
-    z_scaled_np = (np.sign(z_raw_np) * (np.abs(z_raw_np) ** (1.0 / sensitivity))).astype(float)
+    z_raw_np = pivot.values
+    z_scaled_np = np.sign(z_raw_np) * (np.abs(z_raw_np) ** (1.0 / sensitivity))
     x_labels = pivot.columns.tolist()
     y_labels = pivot.index.tolist()
     
+    # PRE-GENERATE HOVER TEXT (The Fail-Safe Step)
+    hover_text = []
+    for i, strike in enumerate(y_labels):
+        row_text = []
+        for j, expiry in enumerate(x_labels):
+            val = z_raw_np[i, j]
+            label = f"Expiry: {expiry}<br>Strike: {strike}<br>Net GEX: ${val:,.0f}"
+            row_text.append(label)
+        hover_text.append(row_text)
+
     max_idx = np.unravel_index(np.argmax(np.abs(z_raw_np)), z_raw_np.shape) if z_raw_np.size > 0 else (0,0)
 
     # 1. HEATMAP
@@ -103,14 +112,13 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
         z=z_scaled_np, 
         x=x_labels, 
         y=y_labels,
-        customdata=z_raw_np,
-        # Using %{customdata:$,.0f} for better formatting
-        hovertemplate="<b>Expiry:</b> %{x}<br><b>Strike:</b> %{y}<br><b>Net GEX:</b> %{customdata:$,.0f}<extra></extra>",
+        text=hover_text,
+        hoverinfo="text", # This tells Plotly to only show our pre-generated strings
         colorscale=[[0, '#32005A'], [0.25, '#BF00FF'], [0.48, '#001E00'], [0.5, '#00C800'], [0.52, '#001E00'], [0.75, '#FFB400'], [1, '#FFFFB4']],
         zmid=0, showscale=True
     ))
 
-    # Annotations
+    # Annotations (Static text on cells)
     annotations = []
     for i, strike in enumerate(y_labels):
         for j, expiry in enumerate(x_labels):
