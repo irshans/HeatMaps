@@ -74,7 +74,7 @@ def compute_gex(df, S, strike_range):
     return pd.DataFrame(out)
 
 # -------------------------
-# Plotting with Annotation Fix
+# Plotting with Bright Purple & Narrow Green
 # -------------------------
 def plot_analysis(gex_df, ticker, S):
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
@@ -86,7 +86,6 @@ def plot_analysis(gex_df, ticker, S):
     max_val = np.max(abs_z) if abs_z.size > 0 else 1
     max_idx = np.unravel_index(np.argmax(abs_z), z.shape) if z.size > 0 else (0,0)
 
-    # 1. Custom Annotations for Text Control
     annotations = []
     for i, strike in enumerate(y_labels):
         for j, expiry in enumerate(x_labels):
@@ -96,39 +95,39 @@ def plot_analysis(gex_df, ticker, S):
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
             if (i, j) == max_idx: txt += " ★"
             
-            # Contrast: Black text on bright yellow
-            color = "black" if val > (max_val * 0.3) else "white"
+            # Contrast: Black text on bright yellow, else white
+            color = "black" if val > (max_val * 0.2) else "white"
             
             annotations.append(dict(
                 x=expiry, y=strike, text=txt,
                 showarrow=False, font=dict(color=color, size=10)
             ))
 
+    # REFINED SCALING: Bright Purple and Narrower Green
     custom_colorscale = [
-        [0.0, 'rgb(30, 0, 50)'],    # Deep Purple
-        [0.3, 'rgb(120, 60, 210)'], # Purple
-        [0.48, 'rgb(0, 35, 0)'],    # Dark Green Boundary
-        [0.5, 'rgb(0, 140, 0)'],    # Pure Green (Zero)
-        [0.52, 'rgb(0, 35, 0)'],    # Dark Green Boundary
-        [0.8, 'rgb(190, 160, 0)'],  # Darker Gold
-        [1.0, 'rgb(255, 215, 0)']   # Bright Yellow
+        [0.0, 'rgb(80, 0, 120)'],     # Dark Purple (Base)
+        [0.2, 'rgb(191, 0, 255)'],    # BRIGHT ELECTRIC PURPLE (Wider Negative Band)
+        [0.49, 'rgb(0, 40, 0)'],      # Very Narrow Green Start
+        [0.5, 'rgb(0, 180, 0)'],      # Pure Green Neutral
+        [0.51, 'rgb(0, 40, 0)'],      # Very Narrow Green End
+        [0.8, 'rgb(255, 215, 0)'],    # Gold (Wider Positive Band)
+        [1.0, 'rgb(255, 255, 100)']    # Bright Yellow (Max Positive)
     ]
 
     fig_heat = go.Figure(data=go.Heatmap(
         z=z, x=x_labels, y=y_labels,
         colorscale=custom_colorscale, zmid=0, showscale=True,
-        texttemplate="", # Disable default text to use annotations instead
     ))
     
     fig_heat.update_layout(
-        title=f"{ticker} Net GEX Map", 
+        title=f"{ticker} Net GEX Heatmap (Purple = Puts/Short, Yellow = Calls/Long)", 
         template="plotly_dark", 
-        height=800,
+        height=850,
         annotations=annotations
     )
-    fig_heat.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"SPOT: {S:.2f}")
+    fig_heat.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"SPOT")
 
-    # 2. Bar Chart with Gamma Flip
+    # Bar Chart with Flip
     strike_agg = gex_df.groupby('strike')['gex_total'].sum().sort_index()
     flip_price = S
     for i in range(1, len(strike_agg)):
@@ -138,17 +137,14 @@ def plot_analysis(gex_df, ticker, S):
 
     fig_bar = go.Figure(go.Bar(
         x=strike_agg.index, y=strike_agg.values,
-        marker_color=['#9B59B6' if x < 0 else '#F1C40F' for x in strike_agg.values]
+        marker_color=['#BF00FF' if x < 0 else '#FFD700' for x in strike_agg.values]
     ))
     fig_bar.add_vline(x=S, line_color="cyan", line_dash="dash", annotation_text="SPOT")
     fig_bar.add_vline(x=flip_price, line_color="orange", line_width=4, annotation_text="GAMMA FLIP")
-    fig_bar.update_layout(title="Total Gamma Profile & Flip Point", template="plotly_dark", height=450)
+    fig_bar.update_layout(title="Aggregate Gamma Profile", template="plotly_dark", height=450)
 
     return fig_heat, fig_bar
 
-# -------------------------
-# Main Application
-# -------------------------
 def main():
     with st.sidebar:
         st.header("Control Panel")
@@ -174,9 +170,9 @@ def main():
                 st.plotly_chart(h_map, use_container_width=True)
                 st.plotly_chart(b_chart, use_container_width=True)
             else:
-                st.warning("No data found. Try widening the strike range.")
+                st.warning("No data found. Try widening strike range.")
         else:
-            st.error("Failed to retrieve options data.")
+            st.error("No options data.")
 
 if __name__ == "__main__":
     main()
