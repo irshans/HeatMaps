@@ -11,7 +11,7 @@ import time
 # -------------------------
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
-MAX_EXPIRATIONS = 5
+MAX_EXPIRATIONS_HARD_CAP = 10  # max allowed in slider
 
 # -------------------------
 # Black-Scholes & Greeks
@@ -60,7 +60,7 @@ def implied_vol_bisect(option_type, market_price, S, K, r, q, T, tol=1e-4, max_i
 # Fetch options from Yahoo Finance with retries
 # -------------------------
 @st.cache_data(ttl=300)
-def fetch_options_yahoo_safe(ticker, max_expirations=MAX_EXPIRATIONS, max_retries=3, delay=2):
+def fetch_options_yahoo_safe(ticker, max_expirations=5, max_retries=3, delay=2):
     stock = yf.Ticker(ticker)
     try:
         expirations = stock.options[:max_expirations]
@@ -234,6 +234,7 @@ def main():
     st.title("📊 Gamma Exposure Heatmap")
     st.sidebar.header("⚙️ Settings")
     ticker = st.sidebar.text_input("Ticker Symbol", "TSLA").upper()
+    max_expirations = st.sidebar.slider("Max Expirations", 1, MAX_EXPIRATIONS_HARD_CAP, 5)
     strike_range = st.sidebar.slider("Strike Range ($)", 5, 100, 50, step=5)
 
     if st.sidebar.button("🚀 Generate Heatmap"):
@@ -243,7 +244,7 @@ def main():
                 S = stock.history(period="1d")["Close"].iloc[-1]
                 st.info(f"**Current Price:** ${S:.2f}")
 
-                df = fetch_options_yahoo_safe(ticker, max_expirations=MAX_EXPIRATIONS)
+                df = fetch_options_yahoo_safe(ticker, max_expirations=max_expirations)
                 if df.empty:
                     st.error(
                         "⚠️ Could not fetch any options data.\n"
