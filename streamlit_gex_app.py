@@ -12,7 +12,7 @@ import time
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
 MAX_EXPIRATIONS_HARD_CAP = 10
-MAX_STRIKES_AROUND_ATM = 5  # above and below ATM
+MAX_STRIKES_AROUND_ATM = 20  # above and below ATM
 
 # -------------------------
 # Black-Scholes & Greeks
