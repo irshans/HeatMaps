@@ -172,34 +172,26 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
         text_matrix.append(row_text)
 
     # Build custom color scale
-    colors = []
-    for row in z:
-        color_row = []
-        for val in row:
-            if val <= -1_000_000:
-                color_row.append("rgb(75,0,130)")  # deep purple
-            elif val >= 1_000_000:
-                color_row.append("rgb(255,215,0)")  # gold/yellow
-            else:
-                color_row.append("rgb(0,128,0)")  # green
-        colors.append(color_row)
+    colorscale = [
+    [0.0, 'rgb(75,0,130)'],      # deep purple (negative large)
+    [0.33, 'rgb(0,128,0)'],      # green (small)
+    [0.66, 'rgb(0,128,0)'],      # green (small)
+    [1.0, 'rgb(255,215,0)']      # yellow (positive large)
+]
 
-    fig = go.Figure(data=go.Heatmap(
-        z=z,
-        x=expiries,
-        y=strikes,
-        text=text_matrix,
-        texttemplate="%{text}",
-        textfont=dict(size=10, color="white"),
-        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
-        showscale=True,
-        colorscale=None,
-        zmin=np.min(z),
-        zmax=np.max(z),
-        xgap=1,
-        ygap=1,
-        zsmooth=False,
-        colors=colors
+fig = go.Figure(data=go.Heatmap(
+    z=z,
+    x=expiries,
+    y=strikes,
+    text=text_matrix,
+    texttemplate="%{text}",
+    textfont=dict(size=10, color="white"),
+    hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
+    showscale=True,
+    colorscale=colorscale,
+    zmin=np.min(z),
+    zmax=np.max(z)
+
     ))
 
     # ATM line
