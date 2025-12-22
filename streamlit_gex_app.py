@@ -258,7 +258,7 @@ def main():
                     return
 
                 fig = plot_heatmap(gex, ticker, S)
-                st.plotly_chart(fig, width=None)
+                st.plotly_chart(fig, width="stretch")
 
         except Exception as e:
             st.error(f"Error: {e}")
