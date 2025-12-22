@@ -16,7 +16,6 @@ FALLBACK_IV = 0.25
 # -------------------------
 def get_actual_trading_day(date_str):
     dt = pd.to_datetime(date_str)
-    # Market holidays
     holidays = ['2024-12-25', '2025-01-01', '2025-07-04', '2025-12-25']
     while dt.weekday() > 4: dt -= timedelta(days=1)
     while dt.strftime('%Y-%m-%d') in holidays:
@@ -53,104 +52,77 @@ def fetch_options_yahoo(ticker, max_expirations):
 
 def compute_gex(df, S, strike_range):
     df = df.copy()
-    # Use UTC for consistent comparison, then convert to EST/EDT
     now = pd.Timestamp.now(tz='US/Eastern').replace(tzinfo=None)
-    
-    # Expiration is usually end of day. We add 16 hours to the date string.
     df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
-    
-    # Calculate T in years. We keep it if it's not fully expired yet.
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365*24*3600)
-    
-    # filter: Keep strikes within range and options that haven't expired yet
-    # We use a tiny buffer (-0.0001) to keep 0DTE visible until the very last second
-    df = df[(df["strike"] >= S - strike_range) & 
-            (df["strike"] <= S + strike_range) & 
-            (df["T"] > -0.0001)]
-
+    df = df[(df["strike"] >= S - strike_range) & (df["strike"] <= S + strike_range) & (df["T"] > -0.0001)]
     out = []
     for _, row in df.iterrows():
-        K, T = float(row["strike"]), float(row["T"])
-        # Ensure T is at least a tiny positive number for the BS formula
-        T_math = max(T, 0.00001) 
-        
+        K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
         oi, vol = float(row.get("openInterest") or 0), float(row.get("volume") or 0)
         liquidity = oi if oi > 0 else vol
         if liquidity <= 0: continue 
-        
         sigma = row.get("impliedVolatility") if row.get("impliedVolatility") and row.get("impliedVolatility") > 0 else FALLBACK_IV
-        gamma = bs_gamma(S, K, 0.045, 0.0, sigma, T_math)
+        gamma = bs_gamma(S, K, 0.045, 0.0, sigma, T)
         dollar_gex = (gamma * S**2) * CONTRACT_SIZE * liquidity * 0.01
-        
         if row["option_type"] == "put": dollar_gex *= -1
         out.append({"strike": K, "expiry": row["expiration"], "gex_total": dollar_gex})
     return pd.DataFrame(out)
 
 # -------------------------
-# Plotting with Clean Text
+# Plotting & Summary
 # -------------------------
 def plot_analysis(gex_df, ticker, S, sensitivity):
+    # Summary Calculations
+    strike_agg = gex_df.groupby('strike')['gex_total'].sum().sort_index()
+    
+    # Flip Price
+    flip_price = S
+    for i in range(1, len(strike_agg)):
+        if np.sign(strike_agg.values[i-1]) != np.sign(strike_agg.values[i]):
+            flip_price = strike_agg.index[i]
+            break
+            
+    top_call_wall = strike_agg.idxmax()
+    top_put_wall = strike_agg.idxmin()
+    
+    # 1. HEATMAP
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
     z_raw = pivot.values
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / sensitivity))
     x_labels, y_labels = pivot.columns, pivot.index
-    
-    # Locate Max Exposure
     max_idx = np.unravel_index(np.argmax(np.abs(z_raw)), z_raw.shape) if z_raw.size > 0 else (0,0)
-    star_strike = y_labels[max_idx[0]]
 
     annotations = []
     for i, strike in enumerate(y_labels):
         for j, expiry in enumerate(x_labels):
             val = z_raw[i, j]
             if val == 0: continue
-            
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
-            if (i, j) == max_idx:
-                txt = f"★ {txt}"
-            
-            # Dynamic color for legibility
+            if (i, j) == max_idx: txt = f"★ {txt}"
             color = "black" if (np.abs(z_scaled[i,j]) > np.max(np.abs(z_scaled)) * 0.6) else "white"
-            
-            annotations.append(dict(
-                x=expiry, y=strike, text=txt, 
-                showarrow=False, 
-                font=dict(color=color, size=10, family="Arial") # Clean Arial font
-            ))
+            annotations.append(dict(x=expiry, y=strike, text=txt, showarrow=False, font=dict(color=color, size=10, family="Arial")))
 
-    fig = go.Figure(data=go.Heatmap(
+    fig_heat = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labels, y=y_labels,
-        colorscale=[
-            [0.0, '#32005A'], [0.25, '#BF00FF'], [0.48, '#001E00'], 
-            [0.5, '#00C800'], [0.52, '#001E00'], [0.75, '#FFB400'], [1.0, '#FFFFB4']
-        ],
+        colorscale=[[0, '#32005A'], [0.25, '#BF00FF'], [0.48, '#001E00'], [0.5, '#00C800'], [0.52, '#001E00'], [0.75, '#FFB400'], [1, '#FFFFB4']],
         zmid=0, showscale=True
     ))
+    fig_heat.add_shape(type="rect", xref="x", yref="y", x0=max_idx[1]-0.5, x1=max_idx[1]+0.5, y0=y_labels[max_idx[0]]-0.5, y1=y_labels[max_idx[0]]+0.5,
+                      line=dict(color="Cyan", width=3), fillcolor="rgba(0, 255, 255, 0.15)")
+    fig_heat.update_layout(title=f"<b>{ticker}</b> Gamma Heatmap", template="plotly_dark", height=700, annotations=annotations, xaxis={'type': 'category'})
+    fig_heat.add_hline(y=S, line_dash="dash", line_color="white", annotation_text=f"SPOT: {S:.2f}")
 
-    # Cyan Highlight Box
-    fig.add_shape(
-        type="rect", xref="x", yref="y",
-        x0=max_idx[1] - 0.5, x1=max_idx[1] + 0.5,
-        y0=star_strike - 0.5, y1=star_strike + 0.5,
-        line=dict(color="Cyan", width=3),
-        fillcolor="rgba(0, 255, 255, 0.15)"
-    )
+    # 2. BAR CHART
+    fig_bar = go.Figure(go.Bar(x=strike_agg.index, y=strike_agg.values, marker_color=['#BF00FF' if x < 0 else '#FFD700' for x in strike_agg.values]))
+    fig_bar.add_vline(x=S, line_color="white", line_dash="dash", annotation_text="SPOT")
+    fig_bar.add_vline(x=flip_price, line_color="cyan", line_width=3, annotation_text=f"FLIP")
+    fig_bar.update_layout(title="Aggregate Gamma Profile", template="plotly_dark", height=400)
 
-    fig.update_layout(
-        title=f"<b>{ticker}</b> Gamma Heatmap | ★ = Max Exposure", 
-        template="plotly_dark", 
-        height=850, 
-        annotations=annotations,
-        xaxis={'type': 'category'} 
-    )
-    
-    fig.add_hline(y=S, line_dash="dash", line_color="white", 
-                  annotation_text=f"SPOT: {S:.2f}", annotation_position="top right")
-    
-    return fig
+    return fig_heat, fig_bar, flip_price, top_call_wall, top_put_wall
 
 # -------------------------
-# Streamlit Main
+# UI
 # -------------------------
 def main():
     with st.sidebar:
@@ -166,14 +138,25 @@ def main():
         hist = stock.history(period="1d")
         if not hist.empty:
             S = hist["Close"].iloc[-1]
-            with st.spinner(f"Analyzing {ticker}..."):
-                raw = fetch_options_yahoo(ticker, max_exp)
-                if not raw.empty:
-                    gex_data = compute_gex(raw, S, s_range)
-                    if not gex_data.empty:
-                        st.plotly_chart(plot_analysis(gex_data, ticker, S, boost), use_container_width=True)
-                    else: st.warning("Increase strike range.")
-                else: st.error("No data found.")
+            raw = fetch_options_yahoo(ticker, max_exp)
+            if not raw.empty:
+                gex_data = compute_gex(raw, S, s_range)
+                if not gex_data.empty:
+                    h_map, b_chart, flip, c_wall, p_wall = plot_analysis(gex_data, ticker, S, boost)
+                    
+                    # --- NEW SUMMARY SECTION ---
+                    st.subheader(f"📊 {ticker} Key Levels")
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Spot Price", f"${S:.2f}")
+                    col2.metric("Gamma Flip", f"${flip:.0f}", delta=f"{S-flip:.2f}", delta_color="inverse")
+                    col3.metric("Major Call Wall", f"${c_wall:.0f}")
+                    col4.metric("Major Put Wall", f"${p_wall:.0f}")
+                    st.markdown("---")
+                    
+                    st.plotly_chart(h_map, use_container_width=True)
+                    st.plotly_chart(b_chart, use_container_width=True)
+                else: st.warning("No data found.")
+            else: st.error("No options data.")
         else: st.error("Ticker not found.")
 
 if __name__ == "__main__":
