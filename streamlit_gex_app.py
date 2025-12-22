@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
 
-# Page config
 st.set_page_config(
     page_title="Gamma Exposure Heatmap",
     page_icon="📊",
@@ -59,7 +58,7 @@ def implied_vol_bisect(option_type, market_price, S, K, r, q, T, tol=1e-4, max_i
     return 0.5*(low+high)
 
 # -------------------------
-# Fetch options from Yahoo Finance
+# Fetch options
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_options_yahoo(ticker, max_expirations=2):
@@ -80,8 +79,7 @@ def fetch_options_yahoo(ticker, max_expirations=2):
             st.warning(f"Error fetching {exp}: {e}")
     if not dfs:
         return pd.DataFrame()
-    options = pd.concat(dfs, ignore_index=True)
-    return options
+    return pd.concat(dfs, ignore_index=True)
 
 # -------------------------
 # Compute gamma exposure
@@ -95,14 +93,15 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
     df["expiration_dt_with_time"] = df["expiration_dt"] + pd.Timedelta(hours=16)
     df["T"] = (df["expiration_dt_with_time"] - now).dt.total_seconds() / (365*24*3600)
     df = df[df["T"] > 1/3650.0]
+
     out_rows = []
     for _, row in df.iterrows():
         K = float(row["strike"])
-        expiry = row["expiration"]
         T = float(row["T"])
         oi = float(row.get("openInterest") or 0.0)
         opt_type = row.get("option_type", "call").lower()
         mid = row.get("mid_price")
+
         sigma = None
         if mid is not None:
             b, a = row.get("bid"), row.get("ask")
@@ -110,15 +109,16 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
             sigma = implied_vol_bisect(opt_type, market_price, S, K, r, q, T)
         if sigma is None or sigma <= 0:
             sigma = fallback_iv
+
         gamma = bs_gamma(S, K, r, q, sigma, T)
         raw_dollar_gamma = gamma * S**2
-        # Sign logic: calls positive, puts negative
         gex_total = raw_dollar_gamma * CONTRACT_SIZE * oi * 0.01
         if opt_type == "put":
             gex_total *= -1
+
         out_rows.append({
             "strike": K,
-            "expiry": expiry,
+            "expiry": row["expiration"],
             "option_type": opt_type,
             "open_interest": oi,
             "sigma": sigma,
@@ -134,8 +134,8 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
 # -------------------------
 def plot_heatmap(gex_df, ticker, S, max_strikes=20):
     gex_df = gex_df.copy()
+    # Use Yahoo's expiration date directly
     gex_df['expiration_dt'] = pd.to_datetime(gex_df['expiry'])
-    gex_df['expiration_dt'] = gex_df['expiration_dt'] + pd.offsets.Week(weekday=4)
     gex_df['expiry_display'] = gex_df['expiration_dt'].dt.strftime('%Y-%m-%d')
 
     strikes_sorted = sorted(gex_df['strike'].unique())
@@ -170,10 +170,10 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=20):
         text_matrix.append(row_text)
 
     colorscale = [
-        [0.0, 'rgb(75,0,130)'],      # deep purple negative
-        [0.33, 'rgb(0,128,0)'],      # green small
-        [0.66, 'rgb(0,128,0)'],      # green small
-        [1.0, 'rgb(255,215,0)']      # yellow positive
+        [0.0, 'rgb(75,0,130)'],   # deep purple negative
+        [0.33, 'rgb(0,128,0)'],   # green small
+        [0.66, 'rgb(0,128,0)'],
+        [1.0, 'rgb(255,215,0)']   # yellow positive
     ]
 
     fig = go.Figure(data=go.Heatmap(
