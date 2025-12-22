@@ -70,7 +70,7 @@ def compute_gex(df, S, strike_range):
     return pd.DataFrame(out)
 
 # -------------------------
-# Plotting with Star & Pop-out
+# Plotting with Clean Text
 # -------------------------
 def plot_analysis(gex_df, ticker, S, sensitivity):
     pivot = gex_df.pivot_table(index='strike', columns='expiry', values='gex_total', aggfunc='sum', fill_value=0).sort_index(ascending=False)
@@ -78,10 +78,9 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / sensitivity))
     x_labels, y_labels = pivot.columns, pivot.index
     
-    # Locate the Star Cell (Highest Absolute GEX)
+    # Locate Max Exposure
     max_idx = np.unravel_index(np.argmax(np.abs(z_raw)), z_raw.shape) if z_raw.size > 0 else (0,0)
     star_strike = y_labels[max_idx[0]]
-    star_expiry = x_labels[max_idx[1]]
 
     annotations = []
     for i, strike in enumerate(y_labels):
@@ -90,17 +89,16 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
             if val == 0: continue
             
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
-            
-            # Add the STAR to the highest value text
             if (i, j) == max_idx:
                 txt = f"★ {txt}"
             
+            # Dynamic color for legibility
             color = "black" if (np.abs(z_scaled[i,j]) > np.max(np.abs(z_scaled)) * 0.6) else "white"
             
             annotations.append(dict(
                 x=expiry, y=strike, text=txt, 
                 showarrow=False, 
-                font=dict(color=color, size=11, family="Arial Black")
+                font=dict(color=color, size=10, family="Arial") # Clean Arial font
             ))
 
     fig = go.Figure(data=go.Heatmap(
@@ -112,14 +110,13 @@ def plot_analysis(gex_df, ticker, S, sensitivity):
         zmid=0, showscale=True
     ))
 
-    # ADD CYAN POP-OUT BOX FOR THE STAR
+    # Cyan Highlight Box
     fig.add_shape(
-        type="rect",
-        xref="x", yref="y",
+        type="rect", xref="x", yref="y",
         x0=max_idx[1] - 0.5, x1=max_idx[1] + 0.5,
         y0=star_strike - 0.5, y1=star_strike + 0.5,
-        line=dict(color="Cyan", width=4),
-        fillcolor="rgba(0, 255, 255, 0.2)"
+        line=dict(color="Cyan", width=3),
+        fillcolor="rgba(0, 255, 255, 0.15)"
     )
 
     fig.update_layout(
@@ -158,8 +155,8 @@ def main():
                     gex_data = compute_gex(raw, S, s_range)
                     if not gex_data.empty:
                         st.plotly_chart(plot_analysis(gex_data, ticker, S, boost), use_container_width=True)
-                    else: st.warning("Increase strike range to find data.")
-                else: st.error("No options data returned.")
+                    else: st.warning("Increase strike range.")
+                else: st.error("No data found.")
         else: st.error("Ticker not found.")
 
 if __name__ == "__main__":
