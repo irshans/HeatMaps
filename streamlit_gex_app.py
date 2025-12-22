@@ -179,19 +179,19 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     [1.0, 'rgb(255,215,0)']      # yellow (positive large)
 ]
 
-fig = go.Figure(data=go.Heatmap(
-    z=z,
-    x=expiries,
-    y=strikes,
-    text=text_matrix,
-    texttemplate="%{text}",
-    textfont=dict(size=10, color="white"),
-    hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
-    showscale=True,
-    colorscale=colorscale,
-    zmin=np.min(z),
-    zmax=np.max(z)
-
+    fig = go.Figure(data=go.Heatmap(
+        z=z,
+        x=expiries,
+        y=strikes,
+        text=text_matrix,
+        texttemplate="%{text}",
+        textfont=dict(size=10, color="white"),
+        hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
+        showscale=True,
+        colorscale=colorscale,
+        zmin=np.min(z),
+        zmax=np.max(z)
+    
     ))
 
     # ATM line
