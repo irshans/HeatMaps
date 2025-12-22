@@ -60,7 +60,7 @@ def fetch_data_safe(ticker, max_exp):
         ticker = f"^{ticker}"
     
     session = get_global_session()
-    stock = yf.Ticker(ticker, session=session)
+    stock = stock = yf.Ticker(ticker)
     
     try:
         # 1. Fetch Spot
