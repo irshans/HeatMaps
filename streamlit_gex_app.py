@@ -4,15 +4,16 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
-import time
 
-# -------------------------
-# CONFIG
-# -------------------------
+# Page config
+st.set_page_config(
+    page_title="Gamma Exposure Heatmap",
+    page_icon="📊",
+    layout="wide"
+)
+
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.25
-MAX_EXPIRATIONS_HARD_CAP = 10
-MAX_STRIKES_AROUND_ATM = 20  # updated to 20
 
 # -------------------------
 # Black-Scholes & Greeks
@@ -58,56 +59,50 @@ def implied_vol_bisect(option_type, market_price, S, K, r, q, T, tol=1e-4, max_i
     return 0.5*(low+high)
 
 # -------------------------
-# Fetch options from Yahoo Finance with retry
+# Fetch options from Yahoo Finance
 # -------------------------
 @st.cache_data(ttl=300)
-def fetch_options_yahoo_safe(ticker, max_expirations=5, max_retries=3, delay=2):
+def fetch_options_yahoo(ticker, max_expirations=2):
     stock = yf.Ticker(ticker)
     try:
         expirations = stock.options[:max_expirations]
     except Exception as e:
-        st.warning(f"Unable to get expirations for {ticker}: {e}")
+        st.warning(f"Error fetching expirations: {e}")
         return pd.DataFrame()
-
     dfs = []
     for exp in expirations:
-        retries = 0
-        while retries < max_retries:
-            try:
-                chain = stock.option_chain(exp)
-                calls = chain.calls.assign(option_type="call", expiration=exp)
-                puts = chain.puts.assign(option_type="put", expiration=exp)
-                dfs.append(pd.concat([calls, puts], ignore_index=True))
-                break
-            except Exception as e:
-                retries += 1
-                time.sleep(delay)
-                if retries >= max_retries:
-                    st.warning(f"Failed to fetch {exp} after {max_retries} retries: {e}")
+        try:
+            chain = stock.option_chain(exp)
+            calls = chain.calls.assign(option_type="call", expiration=exp)
+            puts = chain.puts.assign(option_type="put", expiration=exp)
+            dfs.append(pd.concat([calls, puts], ignore_index=True))
+        except Exception as e:
+            st.warning(f"Error fetching {exp}: {e}")
     if not dfs:
         return pd.DataFrame()
-    return pd.concat(dfs, ignore_index=True)
+    options = pd.concat(dfs, ignore_index=True)
+    return options
 
 # -------------------------
 # Compute gamma exposure
 # -------------------------
 def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
     df = df.copy()
-    df["mid_price"] = df[["bid","ask","lastPrice"]].bfill(axis=1).iloc[:,0]
+    df["mid_price"] = df[["bid", "ask", "lastPrice"]].bfill(axis=1).iloc[:, 0]
     df["expiration_dt"] = pd.to_datetime(df["expiration"])
     df = df[(df["strike"] >= S - strike_range) & (df["strike"] <= S + strike_range)]
     now = pd.Timestamp.now(tz=None)
-    df["T"] = ((df["expiration_dt"] + pd.Timedelta(hours=16)) - now).dt.total_seconds() / (365*24*3600)
+    df["expiration_dt_with_time"] = df["expiration_dt"] + pd.Timedelta(hours=16)
+    df["T"] = (df["expiration_dt_with_time"] - now).dt.total_seconds() / (365*24*3600)
     df = df[df["T"] > 1/3650.0]
-
-    rows = []
+    out_rows = []
     for _, row in df.iterrows():
         K = float(row["strike"])
+        expiry = row["expiration"]
         T = float(row["T"])
         oi = float(row.get("openInterest") or 0.0)
         opt_type = row.get("option_type", "call").lower()
         mid = row.get("mid_price")
-
         sigma = None
         if mid is not None:
             b, a = row.get("bid"), row.get("ask")
@@ -115,15 +110,15 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
             sigma = implied_vol_bisect(opt_type, market_price, S, K, r, q, T)
         if sigma is None or sigma <= 0:
             sigma = fallback_iv
-
         gamma = bs_gamma(S, K, r, q, sigma, T)
         raw_dollar_gamma = gamma * S**2
-        sign = 1 if opt_type == "call" else -1
-        gex_total = raw_dollar_gamma * CONTRACT_SIZE * oi * 0.01 * sign
-
-        rows.append({
+        # Sign logic: calls positive, puts negative
+        gex_total = raw_dollar_gamma * CONTRACT_SIZE * oi * 0.01
+        if opt_type == "put":
+            gex_total *= -1
+        out_rows.append({
             "strike": K,
-            "expiry": row["expiration"],
+            "expiry": expiry,
             "option_type": opt_type,
             "open_interest": oi,
             "sigma": sigma,
@@ -132,22 +127,27 @@ def compute_gex(df, S, r=0.0, q=0.0, fallback_iv=FALLBACK_IV, strike_range=20):
             "gex_total": gex_total,
             "premium": mid if mid is not None else 0.0
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(out_rows)
 
 # -------------------------
-# Plot heatmap with color thresholds + star
+# Heatmap
 # -------------------------
-def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
+def plot_heatmap(gex_df, ticker, S, max_strikes=20):
+    gex_df = gex_df.copy()
+    gex_df['expiration_dt'] = pd.to_datetime(gex_df['expiry'])
+    gex_df['expiration_dt'] = gex_df['expiration_dt'] + pd.offsets.Week(weekday=4)
+    gex_df['expiry_display'] = gex_df['expiration_dt'].dt.strftime('%Y-%m-%d')
+
     strikes_sorted = sorted(gex_df['strike'].unique())
-    closest_idx = np.abs(np.array(strikes_sorted)-S).argmin()
-    start = max(0, closest_idx - max_strikes)
-    end = min(len(strikes_sorted), closest_idx + max_strikes + 1)
+    atm_idx = np.abs(np.array(strikes_sorted) - S).argmin()
+    start = max(0, atm_idx - max_strikes)
+    end = min(len(strikes_sorted), atm_idx + max_strikes + 1)
     strikes_to_use = strikes_sorted[start:end]
     df_plot = gex_df[gex_df['strike'].isin(strikes_to_use)]
 
     pivot = df_plot.pivot_table(
         index='strike',
-        columns='expiry',
+        columns='expiry_display',
         values='gex_total',
         aggfunc='sum',
         fill_value=0
@@ -157,10 +157,8 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     expiries = list(pivot.columns)
     z = pivot.values
 
-    # Identify max absolute GEX
     max_idx = np.unravel_index(np.argmax(np.abs(z)), z.shape)
 
-    # Prepare text matrix with star on max absolute GEX
     text_matrix = []
     for i, row in enumerate(z):
         row_text = []
@@ -171,13 +169,12 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
             row_text.append(val_str)
         text_matrix.append(row_text)
 
-    # Build custom color scale
     colorscale = [
-    [0.0, 'rgb(75,0,130)'],      # deep purple (negative large)
-    [0.33, 'rgb(0,128,0)'],      # green (small)
-    [0.66, 'rgb(0,128,0)'],      # green (small)
-    [1.0, 'rgb(255,215,0)']      # yellow (positive large)
-]
+        [0.0, 'rgb(75,0,130)'],      # deep purple negative
+        [0.33, 'rgb(0,128,0)'],      # green small
+        [0.66, 'rgb(0,128,0)'],      # green small
+        [1.0, 'rgb(255,215,0)']      # yellow positive
+    ]
 
     fig = go.Figure(data=go.Heatmap(
         z=z,
@@ -189,12 +186,10 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
         hovertemplate="Expiry: %{x}<br>Strike: %{y}<br>GEX: %{z:,.0f}<extra></extra>",
         showscale=True,
         colorscale=colorscale,
-        zmin=np.min(z),
-        zmax=np.max(z)
-    
+        zmin=z.min(),
+        zmax=z.max()
     ))
 
-    # ATM line
     fig.add_hline(
         y=S,
         line_color='red',
@@ -202,7 +197,6 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
         annotation_text='ATM',
         annotation_position='top right'
     )
-
     fig.update_yaxes(autorange='reversed')
     fig.update_layout(
         title=f"{ticker} – Net Gamma Exposure Heatmap",
@@ -213,39 +207,65 @@ def plot_heatmap(gex_df, ticker, S, max_strikes=MAX_STRIKES_AROUND_ATM):
     return fig
 
 # -------------------------
-# STREAMLIT APP
+# Streamlit App
 # -------------------------
 def main():
     st.title("📊 Gamma Exposure Heatmap")
+    st.markdown("Visualize option gamma exposure across strikes and expirations")
+
     st.sidebar.header("⚙️ Settings")
     ticker = st.sidebar.text_input("Ticker Symbol", "TSLA").upper()
-    max_expirations = st.sidebar.slider("Max Expirations", 1, MAX_EXPIRATIONS_HARD_CAP, 5)
-    strike_range = st.sidebar.slider("Strike Range ($)", 5, 100, 50, step=5)
+    max_expirations = st.sidebar.slider("Max Expirations", 1, 10, 5)
+    strike_range = st.sidebar.slider("Strike Range ($)", 5, 100, 20, step=5)
 
-    if st.sidebar.button("🚀 Generate Heatmap"):
+    if st.sidebar.button("🚀 Generate Heatmap", type="primary"):
         try:
             with st.spinner(f"Fetching data for {ticker}..."):
                 stock = yf.Ticker(ticker)
                 S = stock.history(period="1d")["Close"].iloc[-1]
                 st.info(f"**Current Price:** ${S:.2f}")
 
-                df = fetch_options_yahoo_safe(ticker, max_expirations=max_expirations)
+                df = fetch_options_yahoo(ticker, max_expirations=max_expirations)
                 if df.empty:
-                    st.error("⚠️ Could not fetch any options data. Yahoo may be rate-limiting requests.")
+                    st.error(f"No options data found for {ticker}")
                     return
 
-                gex = compute_gex(df, S, strike_range=strike_range)
+                gex = compute_gex(df, S, fallback_iv=FALLBACK_IV, strike_range=strike_range)
                 if gex.empty:
                     st.error("No gamma exposure computed.")
                     return
 
-                fig = plot_heatmap(gex, ticker, S)
-                st.plotly_chart(fig, width="stretch")
+                agg = gex.groupby(["strike", "expiry"]).agg({
+                    "gex_total": "sum",
+                    "premium": "mean"
+                }).reset_index()
+
+                call_oi = gex[gex['option_type'] == 'call']['open_interest'].sum()
+                put_oi = gex[gex['option_type'] == 'put']['open_interest'].sum()
+                pc_ratio = put_oi / call_oi if call_oi > 0 else 0
+                call_gex = gex[gex['option_type'] == 'call']['gex_total'].sum()
+                put_gex = gex[gex['option_type'] == 'put']['gex_total'].sum()
+
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total GEX", f"${agg['gex_total'].sum():,.0f}")
+                with col2:
+                    pc_color = "🔴" if pc_ratio > 1 else "🟢"
+                    st.metric("Put/Call Ratio", f"{pc_color} {pc_ratio:.2f}")
+                with col3:
+                    st.metric("Call GEX", f"${call_gex:,.0f}")
+                with col4:
+                    st.metric("Put GEX", f"${put_gex:,.0f}")
+
+                fig = plot_heatmap(agg, ticker, S, max_strikes=20)
+                st.plotly_chart(fig, width='stretch')
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error: {str(e)}")
     else:
         st.info("👈 Enter a ticker symbol and click 'Generate Heatmap' to get started!")
+        st.markdown("### Example Output")
+        st.markdown("This tool displays a heatmap showing gamma exposure across different strikes and expiration dates.")
 
 if __name__ == "__main__":
     main()
