@@ -53,18 +53,35 @@ def fetch_options_yahoo(ticker, max_expirations):
 
 def compute_gex(df, S, strike_range):
     df = df.copy()
-    now = pd.Timestamp.now()
-    df["T"] = (pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16) - now).dt.total_seconds() / (365*24*3600)
-    df = df[(df["strike"] >= S - strike_range) & (df["strike"] <= S + strike_range) & (df["T"] > 0)]
+    # Use UTC for consistent comparison, then convert to EST/EDT
+    now = pd.Timestamp.now(tz='US/Eastern').replace(tzinfo=None)
+    
+    # Expiration is usually end of day. We add 16 hours to the date string.
+    df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
+    
+    # Calculate T in years. We keep it if it's not fully expired yet.
+    df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365*24*3600)
+    
+    # filter: Keep strikes within range and options that haven't expired yet
+    # We use a tiny buffer (-0.0001) to keep 0DTE visible until the very last second
+    df = df[(df["strike"] >= S - strike_range) & 
+            (df["strike"] <= S + strike_range) & 
+            (df["T"] > -0.0001)]
+
     out = []
     for _, row in df.iterrows():
         K, T = float(row["strike"]), float(row["T"])
+        # Ensure T is at least a tiny positive number for the BS formula
+        T_math = max(T, 0.00001) 
+        
         oi, vol = float(row.get("openInterest") or 0), float(row.get("volume") or 0)
         liquidity = oi if oi > 0 else vol
         if liquidity <= 0: continue 
+        
         sigma = row.get("impliedVolatility") if row.get("impliedVolatility") and row.get("impliedVolatility") > 0 else FALLBACK_IV
-        gamma = bs_gamma(S, K, 0.045, 0.0, sigma, T)
+        gamma = bs_gamma(S, K, 0.045, 0.0, sigma, T_math)
         dollar_gex = (gamma * S**2) * CONTRACT_SIZE * liquidity * 0.01
+        
         if row["option_type"] == "put": dollar_gex *= -1
         out.append({"strike": K, "expiry": row["expiration"], "gex_total": dollar_gex})
     return pd.DataFrame(out)
