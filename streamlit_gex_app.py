@@ -155,10 +155,8 @@ def render_plots(df, ticker, S, mode):
     ).sort_index(ascending=False)
 
     z_raw = pivot.values
-    # Removed boost parameter - using raw scaled values
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / 2.0))
 
-    # Create hover text with actual values
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
     h_text = []
@@ -170,140 +168,58 @@ def render_plots(df, ticker, S, mode):
             row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
-    # Color scheme - dark purple to bright yellow through dark blues/greens
     colorscale = [
-        [0.0, '#2d0052'],    # Dark purple (most negative)
-        [0.2, '#1a1f4d'],    # Dark blue-purple
-        [0.35, '#1e3a5f'],   # Dark blue
-        [0.5, '#1f4d4d'],    # Dark teal/green (zero)
-        [0.65, '#2d5a3d'],   # Dark green
-        [0.8, '#6b7c1f'],    # Olive
-        [0.9, '#d4a017'],    # Bright gold
-        [1.0, '#ffd700']     # Bright yellow (most positive)
+        [0.0, '#2d0052'], [0.2, '#1a1f4d'], [0.35, '#1e3a5f'], [0.5, '#1f4d4d'], 
+        [0.65, '#2d5a3d'], [0.8, '#6b7c1f'], [0.9, '#d4a017'], [1.0, '#ffd700']
     ]
     
     fig_h = go.Figure(data=go.Heatmap(
-        z=z_scaled, 
-        x=x_labs, 
-        y=y_labs,
-        text=h_text,
-        hoverinfo="text",
-        colorscale=colorscale, 
-        zmid=0, 
-        colorbar=dict(
-            title=mode,
-            tickmode="linear",
-            tick0=z_scaled.min(),
-            dtick=(z_scaled.max() - z_scaled.min()) / 5
-        ),
-        hovertemplate='%{text}<extra></extra>'
+        z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
+        colorscale=colorscale, zmid=0, showscale=True
     ))
 
-    # Find the biggest absolute value for star annotation
     max_abs_val = np.max(np.abs(z_raw))
-    max_position = None
-    for i, strike in enumerate(y_labs):
-        for j, exp in enumerate(x_labs):
-            if abs(z_raw[i, j]) == max_abs_val:
-                max_position = (i, j)
-                break
-        if max_position:
-            break
     
-    # Add annotations for ALL cells
+    # Add annotations for cells
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < 1000:  # Skip very small values
-                continue
+            if abs(val) < 500: continue
             
-            # Format text - always display in thousands with K
-            txt = f"${val/1e3:.1f}K"
+            txt = f"${val/1e3:.0f}K"
+            if abs(val) == max_abs_val: txt += " ⭐"
             
-            # Add star to the biggest absolute value
-            if max_position and i == max_position[0] and j == max_position[1]:
-                txt += " ⭐"
-            
-            # Determine text color based on background intensity
-            # Lighter colors (positive values) = black text
-            # Darker colors (negative values) = white text
+            # Contrast Logic: If normalized intensity is high (yellow), use black text
             cell_val = z_scaled[i, j]
-            z_normalized = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
-            
-            # Use black text for lighter colors (threshold at 0.6)
-            if z_normalized > 0.6:
-                text_color = "black"
-            else:
-                text_color = "white"
+            z_norm = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
+            text_color = "black" if z_norm > 0.55 else "white"
             
             fig_h.add_annotation(
-                x=exp, 
-                y=strike, 
-                text=txt, 
-                showarrow=False,
-                font=dict(color=text_color, size=8),
-                xref="x",
-                yref="y"
+                x=exp, y=strike, text=txt, showarrow=False,
+                font=dict(color=text_color, size=12, family="Arial Black"), # INCREASED SIZE & BOLDNESS
+                xref="x", yref="y"
             )
 
-    # Get current timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%H:%M:%S")
     
     fig_h.update_layout(
-        title=f"SPY {mode} - {timestamp} - Current Price: ${S:.2f}",
-        template="plotly_dark",
-        height=900,
-        xaxis=dict(
-            type='category', 
-            title="",
-            tickfont=dict(size=12),
-            side='top'  # Move dates to top like reference
-        ),
-        yaxis=dict(
-            title="Strike",
-            tickfont=dict(size=12),
-            autorange=True,
-            tickmode='array',  # Force all strikes to show
-            tickvals=y_labs,  # Use all strike values
-            ticktext=[f"{s:.0f}" for s in y_labs]  # Format as integers
-        ),
-        font=dict(size=12),
-        margin=dict(l=80, r=120, t=80, b=40)
+        title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:.2f}",
+        template="plotly_dark", height=900,
+        xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
+        yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True,
+                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:.0f}" for s in y_labs]),
+        margin=dict(l=80, r=120, t=100, b=40)
     )
     
-    # Add horizontal line at current price
-    fig_h.add_hline(
-        y=S, 
-        line_dash="solid", 
-        line_color="yellow", 
-        line_width=2,
-        annotation_text=f"Current: ${S:.2f}",
-        annotation_position="right"
-    )
+    fig_h.add_hline(y=S, line_dash="solid", line_color="yellow", line_width=2,
+                    annotation_text=f"SPOT: {S:.2f}", annotation_position="right")
 
     # Bar chart
-    colors = ['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]
-    fig_b = go.Figure(go.Bar(
-        x=agg.index, 
-        y=agg.values, 
-        marker_color=colors,
-        hovertemplate='Strike: $%{x:.0f}<br>Total: $%{y:.2s}<extra></extra>'
-    ))
-    
-    fig_b.update_layout(
-        title=f"Total {mode} by Strike", 
-        template="plotly_dark", 
-        height=400,
-        xaxis_title="Strike Price",
-        yaxis_title=f"{mode} Exposure ($)"
-    )
-    
-    fig_b.add_vline(
-        x=S, 
-        line_dash="dash", 
-        line_color="yellow",
-        annotation_text=f"Spot: ${S:.2f}"
-    )
+    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
+                             marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
+    fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400,
+                        xaxis_title="Strike", yaxis_title="Exposure ($)")
+    fig_b.add_vline(x=S, line_dash="dash", line_color="yellow")
 
     return fig_h, fig_b
 
@@ -319,15 +235,14 @@ def main():
         mode = st.radio("Metric", ["GEX", "DEX"])
         model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
         max_exp = st.slider("Max Expirations", 1, 15, 6)
-        s_range = st.slider("Strike Range ± Spot", 10, 100, 25, step=1)
+        s_range = st.slider("Strike Range ± Spot", 5, 100, 20, step=1)
         run = st.button("Calculate Exposure", type="primary")
 
     if run:
-        with st.spinner(f"Analyzing {ticker} flow..."):
+        with st.spinner(f"Analyzing {ticker}..."):
             S, raw_df = fetch_data_safe(ticker, max_exp)
 
         if S and raw_df is not None and not raw_df.empty:
-            st.success(f"{ticker} Trading at ${S:.2f}")
             processed = process_exposure(raw_df, S, s_range, model_type)
             
             if not processed.empty:
@@ -340,14 +255,12 @@ def main():
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode)
                 
-                if h_fig:
-                    st.plotly_chart(h_fig, width="stretch")
-                if b_fig:
-                    st.plotly_chart(b_fig, width="stretch")
+                if h_fig: st.plotly_chart(h_fig, width="stretch")
+                if b_fig: st.plotly_chart(b_fig, width="stretch")
             else:
-                st.warning("No liquidity found in that range.")
+                st.warning("No data found in range.")
         else:
-            st.error("Fetch failed. Please check ticker or try again later.")
+            st.error("Fetch failed. Please check ticker.")
 
 if __name__ == "__main__":
     main()
