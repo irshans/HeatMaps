@@ -140,7 +140,7 @@ def process_exposure(df, S, s_range, model_type):
 # -------------------------
 # Visualizations
 # -------------------------
-def render_plots(df, ticker, S, mode, boost):
+def render_plots(df, ticker, S, mode):
     if df.empty: 
         return None, None
 
@@ -155,7 +155,8 @@ def render_plots(df, ticker, S, mode, boost):
     ).sort_index(ascending=False)
 
     z_raw = pivot.values
-    z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / boost))
+    # Removed boost parameter - using raw scaled values
+    z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / 2.0))
 
     # Create hover text with actual values
     x_labs = pivot.columns.tolist()
@@ -169,13 +170,13 @@ def render_plots(df, ticker, S, mode, boost):
             row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
-    # UPDATED COLORSCALE - Blue to Yellow gradient
+    # Color scheme matching reference image
     colorscale = [
-        [0.0, '#1e3a5f'],    # Dark blue (negative)
-        [0.25, '#2563eb'],   # Medium blue
-        [0.5, '#0ea5e9'],    # Cyan blue (zero)
-        [0.75, '#fbbf24'],   # Yellow-orange
-        [1.0, '#fef08a']     # Light yellow (positive)
+        [0.0, '#0d1b2a'],    # Very dark blue (negative)
+        [0.25, '#1b263b'],   # Dark blue
+        [0.5, '#415a77'],    # Medium blue-gray (zero)
+        [0.75, '#778da9'],   # Light blue-gray
+        [1.0, '#e0e1dd']     # Light gray (positive)
     ]
     
     fig_h = go.Figure(data=go.Heatmap(
@@ -298,7 +299,6 @@ def main():
         model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
         max_exp = st.slider("Max Expirations", 1, 15, 6)
         s_range = st.slider("Strike Range ± Spot", 10, 100, 25, step=1)
-        boost = st.slider("Heatmap Contrast Boost", 1.0, 5.0, 2.5)
         run = st.button("Calculate Exposure", type="primary")
 
     if run:
@@ -317,7 +317,7 @@ def main():
                 c1.metric("Net Dealer GEX", f"${t_gex:.2f}B")
                 c2.metric("Net Dealer DEX", f"${t_dex:.2f}B")
 
-                h_fig, b_fig = render_plots(processed, ticker, S, mode, boost)
+                h_fig, b_fig = render_plots(processed, ticker, S, mode)
                 
                 if h_fig:
                     st.plotly_chart(h_fig, width="stretch")
