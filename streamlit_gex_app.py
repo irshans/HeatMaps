@@ -256,7 +256,7 @@ def render_plots(df, ticker, S, mode):
         xaxis=dict(
             type='category', 
             title="",
-            tickfont=dict(size=10),
+            tickfont=dict(size=12),
             side='top'  # Move dates to top like reference
         ),
         yaxis=dict(
@@ -267,7 +267,7 @@ def render_plots(df, ticker, S, mode):
             tickvals=y_labs,  # Use all strike values
             ticktext=[f"{s:.0f}" for s in y_labs]  # Format as integers
         ),
-        font=dict(size=10),
+        font=dict(size=12),
         margin=dict(l=80, r=120, t=80, b=40)
     )
     
