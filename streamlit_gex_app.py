@@ -10,14 +10,15 @@ import requests
 import time
 import random
 
-st.set_page_config(page_title="GEX Pro - Stable", page_icon="📊", layout="wide")
+# --- APP CONFIG ---
+st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
 
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.30
 RISK_FREE_RATE = 0.042
 
 # -------------------------
-# Holiday Rollback
+# Holiday & Date Logic
 # -------------------------
 def get_actual_trading_day(date_str):
     dt = pd.to_datetime(date_str)
@@ -35,7 +36,7 @@ def get_actual_trading_day(date_str):
     return dt.strftime('%Y-%m-%d')
 
 # -------------------------
-# Black-Scholes Greeks
+# Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
     if T <= 0 or sigma <= 0:
@@ -46,7 +47,7 @@ def get_greeks(S, K, r, sigma, T, option_type):
     return gamma, delta
 
 # -------------------------
-# Data Fetcher
+# Data Fetcher (Resilient)
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_data_safe(ticker, max_exp):
@@ -72,11 +73,10 @@ def fetch_data_safe(ticker, max_exp):
 
         for i, exp in enumerate(target_exps):
             progress_text.text(f"Fetching expiry: {exp} ({i+1}/{len(target_exps)})")
-
             success = False
             for attempt in range(4):
                 try:
-                    time.sleep(random.uniform(0.4, 0.9))
+                    time.sleep(random.uniform(0.5, 1.0))
                     chain = stock.option_chain(exp)
                     t_date = get_actual_trading_day(exp)
                     calls = chain.calls.assign(option_type="call", expiration=t_date)
@@ -85,11 +85,9 @@ def fetch_data_safe(ticker, max_exp):
                     success = True
                     break
                 except Exception:
-                    time.sleep(1.5)
+                    time.sleep(2)
 
             prog_bar.progress((i + 1) / len(target_exps))
-            if not success:
-                st.warning(f"Failed to fetch {exp} after retries.")
 
         progress_text.empty()
         prog_bar.empty()
@@ -103,55 +101,45 @@ def fetch_data_safe(ticker, max_exp):
         return None, None
 
 # -------------------------
-# GEX & DEX Calculation (Dealer Positioning)
+# GEX & DEX Processing
 # -------------------------
-def process_exposure(df, S, s_range):
+def process_exposure(df, S, s_range, model_type):
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.copy()
-    # Updated to handle timezone-naive comparison safely
+    # Aligning time to Market Close (4 PM)
     now = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16)
-
-    # Convert expiration to datetime and set to 4 PM (Market Close)
     df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
-    
-    # Calculate Time to Expiry (T) in years
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
 
-    # Filter by Strike Range and Expiry
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > 0)]
 
     res = []
     for _, row in df.iterrows():
-        K = float(row["strike"])
-        T = max(float(row["T"]), 0.00001)
-        oi = row.get("openInterest") or 0
-        vol = row.get("volume") or 0
-        liq = oi if oi > 0 else vol
-        if liq <= 0:
-            continue
+        K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
+        liq = (row.get("openInterest") or 0) if (row.get("openInterest") or 0) > 0 else (row.get("volume") or 0)
+        
+        if liq <= 0: continue
 
         iv = row["impliedVolatility"]
-        if not (0.05 < iv < 4.0):
-            iv = FALLBACK_IV
+        if not (0.05 < iv < 4.0): iv = FALLBACK_IV
 
         gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        # Claude's Logic: Short Calls (Negative) vs Long Puts (Positive)
-        if row["option_type"] == "call":
-            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq  # Dealer Short Call
-            dex = -delta * S * CONTRACT_SIZE * liq
+        # MODEL SELECTION
+        if model_type == "Dealer Short All (Absolute Stress)":
+            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
         else:
-            gex = gamma * S**2 * 0.01 * CONTRACT_SIZE * liq   # Dealer Long Put
-            dex = -delta * S * CONTRACT_SIZE * liq
+            # Short Calls / Long Puts (Claude's Logic)
+            if row["option_type"] == "call":
+                gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+            else:
+                gex = gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
 
-        res.append({
-            "strike": K,
-            "expiry": row["expiration"],
-            "gex": gex,
-            "dex": dex
-        })
+        dex = -delta * S * CONTRACT_SIZE * liq
+
+        res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "dex": dex})
 
     return pd.DataFrame(res)
 
@@ -159,136 +147,79 @@ def process_exposure(df, S, s_range):
 # Visualizations
 # -------------------------
 def render_plots(df, ticker, S, mode, boost):
-    if df.empty:
-        return None, None
+    if df.empty: return None, None
 
-    val_col = 'gex' if mode == "GEX" else 'dex'
-    display_name = mode
-
+    val_col = mode.lower()
     agg = df.groupby('strike')[val_col].sum().sort_index()
-
-    pivot = df.pivot_table(
-        index='strike',
-        columns='expiry',
-        values=val_col,
-        aggfunc='sum',
-        fill_value=0
-    ).sort_index(ascending=False)
+    pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
 
     z_raw = pivot.values
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / boost))
 
-    x_labs = pivot.columns.tolist()
-    y_labs = pivot.index.tolist()
-
-    h_text = []
-    for i, strike in enumerate(y_labs):
-        row = []
-        for j, ex in enumerate(x_labs):
-            val = z_raw[i, j]
-            formatted = f"${val/1e6:.2f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
-            row.append(f"Expiry: {ex}<br>Strike: {strike}<br>{display_name}: {formatted}")
-        h_text.append(row)
-
     colorscale = 'RdBu' if mode == "DEX" else [[0, '#32005A'], [0.3, '#BF00FF'], [0.5, '#000000'], [0.7, '#FFB400'], [1, '#FFFFB4']]
+    
     fig_h = go.Figure(data=go.Heatmap(
-        z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
-        colorscale=colorscale, zmid=0, colorbar=dict(title=display_name)
+        z=z_scaled, x=pivot.columns, y=pivot.index,
+        colorscale=colorscale, zmid=0, colorbar=dict(title=mode)
     ))
 
-    # Add dynamic annotations for high-exposure strikes
-    threshold = np.percentile(np.abs(z_raw), 85) if z_raw.size > 0 else 0
-    for i, strike in enumerate(y_labs):
-        for j, exp in enumerate(x_labs):
-            val = z_raw[i, j]
-            if abs(val) < threshold:
-                continue
-            txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val/1e3:.0f}K"
-            fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False,
-                                 font=dict(color="white" if abs(z_scaled[i,j]) > np.max(np.abs(z_scaled))*0.5 else "black", size=9))
-
     fig_h.update_layout(
-        title=f"{ticker} {display_name} Exposure Heatmap (Dealer Positioning)",
-        template="plotly_dark",
-        height=800,
-        xaxis=dict(type='category', title="Expiration"),
-        yaxis=dict(title="Strike")
+        title=f"{ticker} {mode} Exposure Map", template="plotly_dark", height=750,
+        xaxis=dict(type='category', title="Expiration"), yaxis=dict(title="Strike")
     )
     fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"Spot: {S:.2f}")
 
-    colors = ['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=colors))
-    fig_b.update_layout(
-        title=f"Total {display_name} Exposure by Strike",
-        template="plotly_dark",
-        height=450,
-        xaxis_title="Strike",
-        yaxis_title=f"{display_name} Exposure ($)"
-    )
+    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]))
+    fig_b.update_layout(title=f"Total {mode} by Strike", template="plotly_dark", height=400)
 
     return fig_h, fig_b
 
 # -------------------------
-# Main App
+# Main App Interface
 # -------------------------
 def main():
-    st.title("📈 GEX / DEX Pro - Dealer Exposure Analyzer")
-    st.markdown("*Industry-standard calculation assuming dealers are short options*")
-
+    st.title("📈 GEX / DEX Pro - Dealer Exposure")
+    
     with st.sidebar:
-        st.header("Settings")
+        st.header("Control Panel")
         ticker = st.text_input("Ticker", "SPY").upper().strip()
-        mode = st.radio("Exposure Type", ["GEX", "DEX"], help="GEX = Gamma Exposure | DEX = Delta Exposure")
-        max_exp = st.slider("Max Expirations", 1, 12, 6)
+        mode = st.radio("Metric", ["GEX", "DEX"])
+        model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
         
-        # --- UPDATED SLIDER LOGIC ---
-        is_index = ticker.lstrip("^") in ["SPX", "NDX", "RUT"]
-        default_range = 25 # Set default to 25 as requested
+        max_exp = st.slider("Max Expirations", 1, 15, 6)
         
-        # Minimum 10, Maximum 100, Step 10 (creates the dots/intervals), Default 25
-        # Note: Since step is 10, 25 isn't technically on a "dot". 
-        # I will set step to 1 to allow 25, or set default to 20/30 to snap to dots.
-        # Keeping step=1 so you can hit 25 exactly.
-        s_range = st.slider("Strike Range ± Spot", min_value=10, max_value=100, value=25, step=1)
+        # SLIDER CUSTOMIZATION: Min 10, Max 100, Default 25
+        # Step is 1 to allow 25, but UI will show intervals naturally
+        s_range = st.slider("Strike Range ± Spot", 10, 100, 25, step=1)
         
-        boost = st.slider("Heatmap Color Boost", 1.0, 5.0, 2.5)
-
-        run = st.button("Run Analysis", type="primary")
+        boost = st.slider("Heatmap Contrast Boost", 1.0, 5.0, 2.5)
+        run = st.button("Calculate Exposure", type="primary")
 
     if run:
-        with st.spinner("Fetching option chains..."):
+        with st.spinner(f"Analyzing {ticker} flow..."):
             S, raw_df = fetch_data_safe(ticker, max_exp)
 
-        if S is None:
-            st.error("Unable to fetch data.")
-            return
+        if S and not raw_df.empty:
+            st.success(f"{ticker} Trading at ${S:.2f}")
+            processed = process_exposure(raw_df, S, s_range, model_type)
+            
+            if not processed.empty:
+                t_gex = processed["gex"].sum() / 1e9
+                t_dex = processed["dex"].sum() / 1e9
+                
+                c1, c2 = st.columns(2)
+                c1.metric("Net Dealer GEX", f"${t_gex:.2f}B")
+                c2.metric("Net Dealer DEX", f"${t_dex:.2f}B")
 
-        if raw_df is None or raw_df.empty:
-            st.warning("No option expirations found.")
-            return
-
-        st.success(f"{ticker} Spot Price: **${S:.2f}**")
-        processed = process_exposure(raw_df, S, s_range)
-
-        if processed.empty:
-            st.warning("No data found in range.")
-            return
-
-        total_gex = processed["gex"].sum()
-        total_dex = processed["dex"].sum() / 1e9
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Dealer GEX", f"${total_gex/1e9:.2f}B")
-        with col2:
-            st.metric("Total Dealer DEX", f"${total_dex:.2f}B")
-
-        heatmap_fig, bar_fig = render_plots(processed, ticker, S, mode, boost)
-
-        if heatmap_fig:
-            st.plotly_chart(heatmap_fig, use_container_width=True)
-        if bar_fig:
-            st.plotly_chart(bar_fig, use_container_width=True)
+                h_fig, b_fig = render_plots(processed, ticker, S, mode, boost)
+                
+                # FIXED: Replacement of use_container_width with width="container"
+                st.plotly_chart(h_fig, width="container")
+                st.plotly_chart(b_fig, width="container")
+            else:
+                st.warning("No liquidity found in that range.")
+        else:
+            st.error("Fetch failed. Please check ticker or try again later.")
 
 if __name__ == "__main__":
     main()
