@@ -106,11 +106,20 @@ def process_exposure(df, S, s_range, model_type):
         return pd.DataFrame()
 
     df = df.copy()
-    now = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16)
-    df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
+    
+    # Use timezone-aware Eastern Time
+    now = pd.Timestamp.now(tz='US/Eastern').normalize() + pd.Timedelta(hours=16)
+    
+    # Localize expiry dates to US/Eastern before adding 16:00
+    expiry_dates = pd.to_datetime(df["expiration"])
+    expiry_dt_localized = expiry_dates.dt.tz_localize('US/Eastern')
+    df["expiry_dt"] = expiry_dt_localized + pd.Timedelta(hours=16)
+    
+    # Safe subtraction, T will be small positive for 0DTE during the day
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
-
-    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > 0)]
+    
+    # Relax filter slightly for very short T
+    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > -0.0001)]
 
     res = []
     for _, row in df.iterrows():
@@ -240,11 +249,11 @@ def main():
     
     with st.sidebar:
         st.header("Control Panel")
-        ticker = st.text_input("Ticker", "SPY").upper().strip()
+        ticker = st.text_input("Ticker", "SPX").upper().strip()
         mode = st.radio("Metric", ["GEX", "DEX"])
         model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
-        max_exp = st.slider("Max Expirations", 1, 15, 6)
-        s_range = st.slider("Strike Range ± Spot", 5, 100, 20, step=1)
+        max_exp = st.slider("Max Expirations", 1, 15, 5)
+        s_range = st.slider("Strike Range ± Spot", 5, 100, 40, step=1)
         run = st.button("Calculate Exposure", type="primary")
 
     if run:
