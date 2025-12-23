@@ -175,7 +175,6 @@ def render_plots(df, ticker, S, mode):
         row = []
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            # SIGN FRONT OF $ FORMATTING
             prefix = "-" if val < 0 else ""
             v_abs = abs(val)
             formatted = f"{prefix}${v_abs/1e6:,.2f}M" if v_abs >= 1e6 else f"{prefix}${v_abs/1e3:,.1f}K"
@@ -200,7 +199,6 @@ def render_plots(df, ticker, S, mode):
             val = z_raw[i, j]
             if abs(val) < 500: continue
             
-            # FORMATTING: SIGN + $ + COMMA
             prefix = "-" if val < 0 else ""
             v_abs = abs(val)
             txt = f"{prefix}${v_abs/1e3:,.0f}K"
@@ -228,8 +226,17 @@ def render_plots(df, ticker, S, mode):
         margin=dict(l=80, r=120, t=100, b=40)
     )
     
-    fig_h.add_hline(y=S, line_dash="solid", line_color="yellow", line_width=2,
-                    annotation_text=f"SPOT: ${S:,.2f}", annotation_position="right")
+    # Updated spot line: thinner, dotted, semi-transparent
+    fig_h.add_hline(
+        y=S,
+        line_dash="dot",
+        line_color="yellow",
+        line_width=1.5,
+        opacity=0.7,
+        annotation_text=f"SPOT: ${S:,.2f}",
+        annotation_position="top right",
+        annotation_font=dict(size=11, color="yellow")
+    )
 
     # Bar chart
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
@@ -267,7 +274,6 @@ def main():
                 t_gex = processed["gex"].sum() / 1e9
                 t_dex = processed["dex"].sum() / 1e9
                 
-                # METRIC FORMATTING
                 prefix_g = "-" if t_gex < 0 else ""
                 prefix_d = "-" if t_dex < 0 else ""
                 
@@ -277,8 +283,8 @@ def main():
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode)
                 
-                if h_fig: st.plotly_chart(h_fig, width="stretch")
-                if b_fig: st.plotly_chart(b_fig, width="stretch")
+                if h_fig: st.plotly_chart(h_fig, use_container_width=True)
+                if b_fig: st.plotly_chart(b_fig, use_container_width=True)
             else:
                 st.warning("No data found in range.")
         else:
