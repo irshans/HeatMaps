@@ -210,7 +210,7 @@ def render_plots(df, ticker, S, mode):
         if max_position:
             break
     
-    # Add annotations for ALL cells (like the reference image)
+    # Add annotations for ALL cells
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
@@ -261,7 +261,7 @@ def render_plots(df, ticker, S, mode):
         ),
         yaxis=dict(
             title="Strike",
-            tickfont=dict(size=8),
+            tickfont=dict(size=12),
             autorange=True,
             tickmode='array',  # Force all strikes to show
             tickvals=y_labs,  # Use all strike values
