@@ -67,7 +67,7 @@ def fetch_data_safe(ticker, max_exp):
         ticker = f"^{ticker.upper()}"
 
     session = get_global_session()
-    stock = yf.Ticker(ticker, session=session)
+    stock = yf.Ticker(ticker)  # No session argument
 
     try:
         hist = stock.history(period="5d")
