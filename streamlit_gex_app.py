@@ -164,8 +164,11 @@ def render_plots(df, ticker, S, mode):
         row = []
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            formatted = f"${val/1e6:.2f}M" if abs(val) >= 1e6 else f"${val/1e3:.1f}K"
-            row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
+            # SIGN FRONT OF $ FORMATTING
+            prefix = "-" if val < 0 else ""
+            v_abs = abs(val)
+            formatted = f"{prefix}${v_abs/1e6:,.2f}M" if v_abs >= 1e6 else f"{prefix}${v_abs/1e3:,.1f}K"
+            row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
     colorscale = [
@@ -186,39 +189,43 @@ def render_plots(df, ticker, S, mode):
             val = z_raw[i, j]
             if abs(val) < 500: continue
             
-            txt = f"${val/1e3:.0f}K"
+            # FORMATTING: SIGN + $ + COMMA
+            prefix = "-" if val < 0 else ""
+            v_abs = abs(val)
+            txt = f"{prefix}${v_abs/1e3:,.0f}K"
+            
             if abs(val) == max_abs_val: txt += " ⭐"
             
-            # Contrast Logic: If normalized intensity is high (yellow), use black text
             cell_val = z_scaled[i, j]
             z_norm = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
             text_color = "black" if z_norm > 0.55 else "white"
             
             fig_h.add_annotation(
                 x=exp, y=strike, text=txt, showarrow=False,
-                font=dict(color=text_color, size=12, family="Arial"), # INCREASED SIZE & BOLDNESS
+                font=dict(color=text_color, size=12, family="Arial"), 
                 xref="x", yref="y"
             )
 
     timestamp = datetime.now().strftime("%H:%M:%S")
     
     fig_h.update_layout(
-        title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:.2f}",
+        title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:,.2f}",
         template="plotly_dark", height=900,
         xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
         yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True,
-                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:.0f}" for s in y_labs]),
+                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:,.0f}" for s in y_labs]),
         margin=dict(l=80, r=120, t=100, b=40)
     )
     
     fig_h.add_hline(y=S, line_dash="solid", line_color="yellow", line_width=2,
-                    annotation_text=f"SPOT: {S:.2f}", annotation_position="right")
+                    annotation_text=f"SPOT: ${S:,.2f}", annotation_position="right")
 
     # Bar chart
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
                              marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400,
-                        xaxis_title="Strike", yaxis_title="Exposure ($)")
+                        xaxis=dict(title="Strike", tickformat=",d"), 
+                        yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
     fig_b.add_vline(x=S, line_dash="dash", line_color="yellow")
 
     return fig_h, fig_b
@@ -249,9 +256,13 @@ def main():
                 t_gex = processed["gex"].sum() / 1e9
                 t_dex = processed["dex"].sum() / 1e9
                 
+                # METRIC FORMATTING
+                prefix_g = "-" if t_gex < 0 else ""
+                prefix_d = "-" if t_dex < 0 else ""
+                
                 c1, c2 = st.columns(2)
-                c1.metric("Net Dealer GEX", f"${t_gex:.2f}B")
-                c2.metric("Net Dealer DEX", f"${t_dex:.2f}B")
+                c1.metric("Net Dealer GEX", f"{prefix_g}${abs(t_gex):,.2f}B")
+                c2.metric("Net Dealer DEX", f"{prefix_d}${abs(t_dex):,.2f}B")
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode)
                 
