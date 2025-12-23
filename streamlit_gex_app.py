@@ -160,7 +160,7 @@ def render_plots(df, ticker, S, mode):
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
 
-    # Find the strike closest to current spot price
+    # Find closest strike to spot
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
     h_text = []
@@ -206,14 +206,6 @@ def render_plots(df, ticker, S, mode):
 
     timestamp = datetime.now().strftime("%H:%M:%S")
     
-    # Custom tick labels: highlight spot strike with bold white text
-    ticktext = []
-    for s in y_labs:
-        if s == closest_strike:
-            ticktext.append(f"<b><span style='color:white'>{s:,.0f}</span></b>")
-        else:
-            ticktext.append(f"{s:,.0f}")
-
     fig_h.update_layout(
         title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:,.2f}",
         template="plotly_dark", height=900,
@@ -224,39 +216,39 @@ def render_plots(df, ticker, S, mode):
             autorange=True,
             tickmode='array', 
             tickvals=y_labs, 
-            ticktext=ticktext
+            ticktext=[f"{s:,.0f}" for s in y_labs]
         ),
         margin=dict(l=80, r=120, t=100, b=40)
     )
 
-    # Red background highlight behind the spot strike row
+    # === RELIABLE SPOT STRIKE HIGHLIGHT ===
+    # Calculate padding based on strike spacing
     if len(y_labs) > 1:
-        strike_step = y_labs[1] - y_labs[0]  # Assume uniform spacing (common for options)
-        padding = strike_step * 0.45
+        padding = (y_labs[1] - y_labs[0]) * 0.45
     else:
         padding = 10
 
+    # Strong red bar on the left behind the strike label
     fig_h.add_shape(
         type="rect",
         xref="paper", yref="y",
-        x0=0, x1=1,  # Full width for subtle row highlight
+        x0=-0.08, x1=0.0,  # Extends slightly left of plot area
         y0=closest_strike - padding,
         y1=closest_strike + padding,
-        fillcolor="rgba(220, 20, 20, 0.15)",  # Very subtle red tint across the row
+        fillcolor="#dc143c",  # Crimson red
         line=dict(width=0),
         layer="below"
     )
 
-    # Optional: thicker left bar for stronger left-side highlight
-    fig_h.add_shape(
-        type="rect",
+    # Bold white text overlay for the spot strike label
+    fig_h.add_annotation(
         xref="paper", yref="y",
-        x0=0, x1=0.12,
-        y0=closest_strike - padding,
-        y1=closest_strike + padding,
-        fillcolor="rgba(220, 20, 20, 0.6)",
-        line=dict(width=0),
-        layer="below"
+        x=-0.02,  # Positioned just right of the red bar
+        y=closest_strike,
+        text=f"<b>{closest_strike:,.0f}</b>",
+        showarrow=False,
+        font=dict(color="white", size=14, family="Arial"),
+        align="right"
     )
 
     # Bar chart
