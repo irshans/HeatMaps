@@ -246,8 +246,11 @@ def render_plots(df, ticker, S, mode):
         ),
         yaxis=dict(
             title="Strike",
-            tickfont=dict(size=9),
-            autorange=True
+            tickfont=dict(size=8),
+            autorange=True,
+            tickmode='array',  # Force all strikes to show
+            tickvals=y_labs,  # Use all strike values
+            ticktext=[f"{s:.0f}" for s in y_labs]  # Format as integers
         ),
         font=dict(size=10),
         margin=dict(l=80, r=120, t=80, b=40)
