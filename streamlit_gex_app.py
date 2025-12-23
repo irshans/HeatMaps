@@ -159,17 +159,13 @@ def render_plots(df, ticker, S, mode):
 
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
-    
-    # Hover text formatting (Size 12)
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            prefix = "-" if val < 0 else ""
-            val_abs = abs(val)
-            formatted = f"{prefix}${val_abs/1e6:,.2f}M" if val_abs >= 1e6 else f"{prefix}${val_abs/1e3:,.1f}K"
-            row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
+            formatted = f"${val/1e6:.2f}M" if abs(val) >= 1e6 else f"${val/1e3:.1f}K"
+            row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
     colorscale = [
@@ -179,59 +175,50 @@ def render_plots(df, ticker, S, mode):
     
     fig_h = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
-        colorscale=colorscale, zmid=0, showscale=True,
-        colorbar=dict(tickfont=dict(size=12)) # Colorbar font size
+        colorscale=colorscale, zmid=0, showscale=True
     ))
 
     max_abs_val = np.max(np.abs(z_raw))
     
+    # Add annotations for cells
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
             if abs(val) < 500: continue
             
-            prefix = "-" if val < 0 else ""
-            val_abs = abs(val)
-            txt = f"{prefix}${val_abs/1e3:,.0f}K"
-            
+            txt = f"${val/1e3:.0f}K"
             if abs(val) == max_abs_val: txt += " ⭐"
             
+            # Contrast Logic: If normalized intensity is high (yellow), use black text
             cell_val = z_scaled[i, j]
             z_norm = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
             text_color = "black" if z_norm > 0.55 else "white"
             
             fig_h.add_annotation(
                 x=exp, y=strike, text=txt, showarrow=False,
-                font=dict(color=text_color, size=12, family="Arial"), # Cell font size 12
+                font=dict(color=text_color, size=12, family="Arial"), # INCREASED SIZE & BOLDNESS
                 xref="x", yref="y"
             )
 
     timestamp = datetime.now().strftime("%H:%M:%S")
     
     fig_h.update_layout(
-        title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:,.2f}",
-        template="plotly_dark", height=950,
-        xaxis=dict(type='category', side='top', tickfont=dict(size=12)), # X-axis font size 12
-        yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, # Y-axis font size 12
-                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:,.0f}" for s in y_labs]),
-        margin=dict(l=80, r=120, t=120, b=40),
-        hoverlabel=dict(font_size=12) # Hover text font size 12
+        title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:.2f}",
+        template="plotly_dark", height=900,
+        xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
+        yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True,
+                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:.0f}" for s in y_labs]),
+        margin=dict(l=80, r=120, t=100, b=40)
     )
     
     fig_h.add_hline(y=S, line_dash="solid", line_color="yellow", line_width=2,
-                    annotation_text=f"SPOT: {S:,.2f}", 
-                    annotation_position="right",
-                    annotation_font=dict(size=12))
+                    annotation_text=f"SPOT: {S:.2f}", annotation_position="right")
 
-    # Bar chart (All text size 12)
+    # Bar chart
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
                              marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
-    fig_b.update_layout(
-        title=f"Net {mode} by Strike", template="plotly_dark", height=400,
-        xaxis=dict(title="Strike Price", tickfont=dict(size=12), titlefont=dict(size=12)),
-        yaxis=dict(title="Exposure ($)", tickfont=dict(size=12), titlefont=dict(size=12)),
-        hoverlabel=dict(font_size=12)
-    )
+    fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400,
+                        xaxis_title="Strike", yaxis_title="Exposure ($)")
     fig_b.add_vline(x=S, line_dash="dash", line_color="yellow")
 
     return fig_h, fig_b
@@ -263,8 +250,8 @@ def main():
                 t_dex = processed["dex"].sum() / 1e9
                 
                 c1, c2 = st.columns(2)
-                c1.metric("Net Dealer GEX", f"${t_gex:,.2f}B")
-                c2.metric("Net Dealer DEX", f"${t_dex:,.2f}B")
+                c1.metric("Net Dealer GEX", f"${t_gex:.2f}B")
+                c2.metric("Net Dealer DEX", f"${t_dex:.2f}B")
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode)
                 
