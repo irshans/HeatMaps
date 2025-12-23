@@ -13,7 +13,8 @@ import random
 st.set_page_config(page_title="GEX Pro - Stable", page_icon="📊", layout="wide")
 
 CONTRACT_SIZE = 100
-FALLBACK_IV = 0.25
+FALLBACK_IV = 0.30
+RISK_FREE_RATE = 0.045
 
 # -------------------------
 # Fail-Safe Session
@@ -33,177 +34,262 @@ def get_global_session():
 # -------------------------
 def get_actual_trading_day(date_str):
     dt = pd.to_datetime(date_str)
-    holidays = ['2025-12-25', '2026-01-01', '2026-01-19'] # Update as needed
-    while dt.weekday() > 4: dt -= timedelta(days=1)
+    holidays = [
+        '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
+        '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+        '2026-01-01'
+    ]
+    while dt.weekday() > 4:
+        dt -= timedelta(days=1)
     while dt.strftime('%Y-%m-%d') in holidays:
         dt -= timedelta(days=1)
-        while dt.weekday() > 4: dt -= timedelta(days=1)
+        while dt.weekday() > 4:
+            dt -= timedelta(days=1)
     return dt.strftime('%Y-%m-%d')
 
 # -------------------------
-# Math
+# Black-Scholes Greeks
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
-    if T <= 0 or sigma <= 0: return 0.0, 0.0
-    d1 = (math.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*math.sqrt(T))
+    if T <= 0 or sigma <= 0:
+        return 0.0, 0.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
     delta = norm.cdf(d1) if option_type == "call" else norm.cdf(d1) - 1
     return gamma, delta
 
 # -------------------------
-# The Resilient Fetcher
+# Data Fetcher
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_data_safe(ticker, max_exp):
-    # Auto-prefix indices
     if ticker.upper() in ["SPX", "NDX", "RUT"] and not ticker.startswith("^"):
-        ticker = f"^{ticker}"
-    
+        ticker = f"^{ticker.upper()}"
+
     session = get_global_session()
-    stock = stock = yf.Ticker(ticker)
-    
+    stock = yf.Ticker(ticker, session=session)
+
     try:
-        # 1. Fetch Spot
-        hist = stock.history(period="2d") # Fetch 2 days to ensure we get 'last'
-        if hist.empty: return None, None
+        hist = stock.history(period="5d")
+        if hist.empty:
+            return None, None
         S = hist["Close"].iloc[-1]
-        
-        # 2. Fetch Expirations
+
         all_exps = stock.options
-        if not all_exps: return S, None
+        if not all_exps:
+            return S, None
         target_exps = all_exps[:max_exp]
-        
+
         dfs = []
         progress_text = st.empty()
         prog_bar = st.progress(0)
-        
+
         for i, exp in enumerate(target_exps):
-            progress_text.text(f"Fetching Expiry: {exp} ({i+1}/{len(target_exps)})")
-            
-            # Retry logic for each individual chain
+            progress_text.text(f"Fetching expiry: {exp} ({i+1}/{len(target_exps)})")
+
             success = False
-            for attempt in range(3):
+            for attempt in range(4):
                 try:
-                    time.sleep(random.uniform(0.3, 0.7)) # Be polite to Yahoo
+                    time.sleep(random.uniform(0.4, 0.9))
                     chain = stock.option_chain(exp)
                     t_date = get_actual_trading_day(exp)
-                    c = chain.calls.assign(option_type="call", expiration=t_date)
-                    p = chain.puts.assign(option_type="put", expiration=t_date)
-                    dfs.append(pd.concat([c, p], ignore_index=True))
+                    calls = chain.calls.assign(option_type="call", expiration=t_date)
+                    puts = chain.puts.assign(option_type="put", expiration=t_date)
+                    dfs.append(pd.concat([calls, puts], ignore_index=True))
                     success = True
                     break
                 except Exception:
-                    time.sleep(1) # Wait longer on fail
-            
+                    time.sleep(1.5)
+
             prog_bar.progress((i + 1) / len(target_exps))
             if not success:
-                st.warning(f"Skipped {exp} due to connection timeout.")
+                st.warning(f"Failed to fetch {exp} after retries.")
 
         progress_text.empty()
         prog_bar.empty()
-        
-        if not dfs: return S, None
+
+        if not dfs:
+            return S, None
         return S, pd.concat(dfs, ignore_index=True)
 
     except Exception as e:
-        st.error(f"Fetcher encountered an error: {e}")
+        st.error(f"Data fetch error: {e}")
         return None, None
 
 # -------------------------
-# GEX Calculation
+# GEX & DEX Calculation (Dealer Positioning)
 # -------------------------
 def process_exposure(df, S, s_range):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
     df = df.copy()
-    now = pd.Timestamp.now(tz='US/Eastern').replace(tzinfo=None)
+    now = pd.Timestamp.now(tz='US/Eastern').normalize() + pd.Timedelta(hours=16)
     df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
-    df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365*24*3600)
-    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > -0.0001)]
-    
+    df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
+    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > 0)]
+
     res = []
     for _, row in df.iterrows():
-        K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
-        liq = (row.get("openInterest") or 0) if (row.get("openInterest") or 0) > 0 else (row.get("volume") or 0)
-        if liq <= 0: continue
-        
-        iv = row.get("impliedVolatility") if row.get("impliedVolatility") and row.get("impliedVolatility") > 0 else FALLBACK_IV
-        gamma, delta = get_greeks(S, K, 0.045, iv, T, row["option_type"])
-        
-        gex = (gamma * S**2) * 0.01 * CONTRACT_SIZE * liq
-        dex = (delta * S) * CONTRACT_SIZE * liq
-        if row["option_type"] == "put": gex *= -1
-            
-        res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "dex": dex})
+        K = float(row["strike"])
+        T = max(float(row["T"]), 0.00001)
+        oi = row.get("openInterest") or 0
+        vol = row.get("volume") or 0
+        liq = oi if oi > 0 else vol
+        if liq <= 0:
+            continue
+
+        iv = row["impliedVolatility"]
+        if not (0.05 < iv < 4.0):
+            iv = FALLBACK_IV
+
+        gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
+
+        # Dealer short options → negative gamma for both, correct delta sign
+        if row["option_type"] == "call":
+            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+            dex = -delta * S * CONTRACT_SIZE * liq
+        else:
+            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+            dex = -delta * S * CONTRACT_SIZE * liq   # - (negative delta) = positive
+
+        res.append({
+            "strike": K,
+            "expiry": row["expiration"],
+            "gex": gex,
+            "dex": dex
+        })
+
     return pd.DataFrame(res)
 
 # -------------------------
-# Visuals
+# Visualizations
 # -------------------------
 def render_plots(df, ticker, S, mode, boost):
-    val_col = 'gex' if mode == "Gamma" else 'dex'
-    # Aggregation
+    if df.empty:
+        return None, None
+
+    val_col = 'gex' if mode == "GEX" else 'dex'
+    display_name = mode  # GEX or DEX
+
     agg = df.groupby('strike')[val_col].sum().sort_index()
-    pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
-    
+
+    pivot = df.pivot_table(
+        index='strike',
+        columns='expiry',
+        values=val_col,
+        aggfunc='sum',
+        fill_value=0
+    ).sort_index(ascending=False)
+
     z_raw = pivot.values
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / boost))
-    x_labs, y_labs = pivot.columns.tolist(), pivot.index.tolist()
-    
-    # Hover Text Generation
+
+    x_labs = pivot.columns.tolist()
+    y_labs = pivot.index.tolist()
+
     h_text = []
     for i, strike in enumerate(y_labs):
-        row = [f"Expiry: {ex}<br>Strike: {strike}<br>Net {mode}: ${z_raw[i, j]:,.0f}" for j, ex in enumerate(x_labs)]
+        row = []
+        for j, ex in enumerate(x_labs):
+            val = z_raw[i, j]
+            formatted = f"${val/1e6:.2f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
+            row.append(f"Expiry: {ex}<br>Strike: {strike}<br>{display_name}: {formatted}")
         h_text.append(row)
 
-    # Heatmap
+    colorscale = 'RdBu' if mode == "DEX" else [[0, '#32005A'], [0.3, '#BF00FF'], [0.5, '#000000'], [0.7, '#FFB400'], [1, '#FFFFB4']]
     fig_h = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
-        colorscale='RdBu' if mode == "Delta" else [[0,'#32005A'],[0.25,'#BF00FF'],[0.5,'#000000'],[0.75,'#FFB400'],[1,'#FFFFB4']],
-        zmid=0
+        colorscale=colorscale, zmid=0, colorbar=dict(title=display_name)
     ))
-    
-    # Annotations for top/bottom 10% of values to keep it clean
-    threshold = np.max(np.abs(z_raw)) * 0.15
+
+    threshold = np.percentile(np.abs(z_raw), 85)
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < threshold: continue
-            txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val:,.0f}"
-            fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False, font=dict(color="white", size=9))
+            if abs(val) < threshold:
+                continue
+            txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val/1e3:.0f}K"
+            fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False,
+                                 font=dict(color="white" if abs(val) > np.mean(np.abs(z_raw)) else "black", size=9))
 
-    fig_h.update_layout(title=f"{ticker} {mode} Heatmap", template="plotly_dark", height=700, xaxis={'type': 'category'})
-    fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"SPOT: {S:.2f}")
+    fig_h.update_layout(
+        title=f"{ticker} {display_name} Exposure Heatmap (Dealer Positioning)",
+        template="plotly_dark",
+        height=800,
+        xaxis=dict(type='category', title="Expiration"),
+        yaxis=dict(title="Strike")
+    )
+    fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"Spot: {S:.2f}")
 
-    # Bar
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#BF00FF' if x < 0 else '#FFD700' for x in agg.values]))
-    fig_b.update_layout(title=f"Total {mode} by Strike", template="plotly_dark", height=400)
-    
+    colors = ['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]
+    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=colors))
+    fig_b.update_layout(
+        title=f"Total {display_name} Exposure by Strike",
+        template="plotly_dark",
+        height=450,
+        xaxis_title="Strike",
+        yaxis_title=f"{display_name} Exposure ($)"
+    )
+
     return fig_h, fig_b
 
 # -------------------------
-# App Interface
+# Main App
 # -------------------------
 def main():
-    st.sidebar.header("GEX Analytics Settings")
-    ticker = st.sidebar.text_input("Ticker (TSLA, SPY, SPX)", "TSLA").upper()
-    mode = st.sidebar.radio("View Mode", ["Gamma", "Delta"])
-    max_exp = st.sidebar.slider("Expirations to fetch", 1, 10, 5)
-    s_range = st.sidebar.slider("Strike Range +/-", 5, 200, 40)
-    boost = st.sidebar.slider("Color Boost", 1.0, 5.0, 3.0)
-    
-    if st.sidebar.button("Run Analytics", type="primary"):
-        S, raw_df = fetch_data_safe(ticker, max_exp)
-        
-        if S and raw_df is not None:
-            processed = process_exposure(raw_df, S, s_range)
-            if not processed.empty:
-                st.metric(f"{ticker} Current Price", f"${S:.2f}")
-                h, b = render_plots(processed, ticker, S, mode, boost)
-                st.plotly_chart(h, use_container_width=True)
-                st.plotly_chart(b, use_container_width=True)
-            else:
-                st.warning("No option volume/OI found in this strike range.")
-        else:
-            st.error("Connection blocked by Yahoo. Please wait 2-3 minutes, try a VPN, or reduce the number of expirations.")
+    st.title("📈 GEX / DEX Pro - Dealer Exposure Analyzer")
+    st.markdown("*Industry-standard calculation assuming dealers are short options*")
+
+    with st.sidebar:
+        st.header("Settings")
+        ticker = st.text_input("Ticker", "SPY").upper().strip()
+        mode = st.radio("Exposure Type", ["GEX", "DEX"], help="GEX = Gamma Exposure | DEX = Delta Exposure")
+        max_exp = st.slider("Max Expirations", 1, 12, 6)
+        is_index = ticker.lstrip("^") in ["SPX", "NDX", "RUT"]
+        default_range = 400 if is_index else 60
+        s_range = st.slider("Strike Range ± Spot", 20, 800, default_range)
+        boost = st.slider("Heatmap Color Boost", 1.0, 5.0, 2.5, help="Higher = more contrast on small values")
+
+        run = st.button("Run Analysis", type="primary")
+
+    if run:
+        with st.spinner("Fetching option chains..."):
+            S, raw_df = fetch_data_safe(ticker, max_exp)
+
+        if S is None:
+            st.error("Unable to fetch data. Yahoo Finance may be rate-limiting. Try again in a few minutes or use a VPN.")
+            return
+
+        if raw_df is None or raw_df.empty:
+            st.warning("No option expirations found for this ticker.")
+            return
+
+        st.success(f"{ticker} Spot Price: **${S:.2f}**")
+
+        processed = process_exposure(raw_df, S, s_range)
+
+        if processed.empty:
+            st.warning("No significant open interest or volume found in selected strike range.")
+            return
+
+        total_gex = processed["gex"].sum()
+        total_dex = processed["dex"].sum() / 1e9
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total Dealer GEX", f"${total_gex/1e9:.2f}B")
+        with col2:
+            st.metric("Total Dealer DEX", f"${total_dex:.2f}B")
+
+        heatmap_fig, bar_fig = render_plots(processed, ticker, S, mode, boost)
+
+        if heatmap_fig:
+            st.plotly_chart(heatmap_fig, use_container_width=True)
+        if bar_fig:
+            st.plotly_chart(bar_fig, use_container_width=True)
+
+        st.caption("Positive GEX → price pinning | Negative GEX → volatility amplification")
 
 if __name__ == "__main__":
     main()
