@@ -199,6 +199,17 @@ def render_plots(df, ticker, S, mode):
         hovertemplate='%{text}<extra></extra>'
     ))
 
+    # Find the biggest absolute value for star annotation
+    max_abs_val = np.max(np.abs(z_raw))
+    max_position = None
+    for i, strike in enumerate(y_labs):
+        for j, exp in enumerate(x_labs):
+            if abs(z_raw[i, j]) == max_abs_val:
+                max_position = (i, j)
+                break
+        if max_position:
+            break
+    
     # Add annotations for ALL cells (like the reference image)
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
@@ -206,13 +217,12 @@ def render_plots(df, ticker, S, mode):
             if abs(val) < 1000:  # Skip very small values
                 continue
             
-            # Format text
-            if abs(val) >= 1e6:
-                txt = f"${val/1e6:.1f}M"
-            elif abs(val) >= 1e3:
-                txt = f"${val/1e3:.0f}K"
-            else:
-                txt = f"${val:.0f}"
+            # Format text - always display in thousands with K
+            txt = f"${val/1e3:.1f}K"
+            
+            # Add star to the biggest absolute value
+            if max_position and i == max_position[0] and j == max_position[1]:
+                txt += " ⭐"
             
             # Determine text color based on background intensity
             cell_val = z_scaled[i, j]
