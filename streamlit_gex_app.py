@@ -148,23 +148,96 @@ def render_plots(df, ticker, S, mode, boost):
     pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
 
     z_raw = pivot.values
+    # Scaled Z for color mapping
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / boost))
+
+    x_labs = pivot.columns.tolist()
+    y_labs = pivot.index.tolist()
+
+    # Create Hover Text and Label Text
+    h_text = []
+    for i, strike in enumerate(y_labs):
+        row_h = []
+        for j, ex in enumerate(x_labs):
+            val = z_raw[i, j]
+            # Format numbers for readability
+            if abs(val) >= 1e9:
+                fmt = f"${val/1e9:.2f}B"
+            elif abs(val) >= 1e6:
+                fmt = f"${val/1e6:.1f}M"
+            elif abs(val) >= 1e3:
+                fmt = f"${val/1e3:.0f}K"
+            else:
+                fmt = f"${val:.0f}"
+            
+            row_h.append(f"Exp: {ex}<br>Strike: {strike}<br>{mode}: {fmt}")
+        h_text.append(row_h)
 
     colorscale = 'RdBu' if mode == "DEX" else [[0, '#32005A'], [0.3, '#BF00FF'], [0.5, '#000000'], [0.7, '#FFB400'], [1, '#FFFFB4']]
     
     fig_h = go.Figure(data=go.Heatmap(
-        z=z_scaled, x=pivot.columns, y=pivot.index,
-        colorscale=colorscale, zmid=0, colorbar=dict(title=mode)
+        z=z_scaled, 
+        x=x_labs, 
+        y=y_labs,
+        text=h_text,
+        hoverinfo="text",
+        colorscale=colorscale, 
+        zmid=0, 
+        colorbar=dict(title=f"Intensity ({mode})")
     ))
 
-    fig_h.update_layout(
-        title=f"{ticker} {mode} Exposure Map", template="plotly_dark", height=750,
-        xaxis=dict(type='category', title="Expiration"), yaxis=dict(title="Strike")
-    )
-    fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", annotation_text=f"Spot: {S:.2f}")
+    # --- ADD TEXT ANNOTATIONS (The fix for missing values) ---
+    # We only show text for the top 30% of values to keep it clean
+    limit = np.percentile(np.abs(z_raw), 70) if z_raw.size > 0 else 0
+    
+    for i, strike in enumerate(y_labs):
+        for j, exp in enumerate(x_labs):
+            val = z_raw[i, j]
+            if abs(val) < limit or val == 0:
+                continue
+            
+            # Formatting the display label
+            if abs(val) >= 1e6:
+                display_txt = f"{val/1e6:.1f}M"
+            else:
+                display_txt = f"{val/1e3:.0f}K"
 
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]))
-    fig_b.update_layout(title=f"Total {mode} by Strike", template="plotly_dark", height=400)
+            fig_h.add_annotation(
+                x=exp, y=strike,
+                text=display_txt,
+                showarrow=False,
+                font=dict(
+                    color="white" if abs(z_scaled[i,j]) > (np.max(np.abs(z_scaled)) * 0.4) else "#A0A0A0",
+                    size=10
+                )
+            )
+
+    fig_h.update_layout(
+        title=f"{ticker} {mode} Exposure Map", 
+        template="plotly_dark", 
+        height=800,
+        xaxis=dict(type='category', title="Expiration Date"), 
+        yaxis=dict(title="Strike Price", tickformat=".0f")
+    )
+    
+    # Add Spot Line
+    fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", 
+                    annotation_text=f"Current Spot: {S:.2f}", 
+                    annotation_position="top right")
+
+    # Bar Chart
+    fig_b = go.Figure(go.Bar(
+        x=agg.index, 
+        y=agg.values, 
+        marker_color=['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]
+    ))
+    fig_b.update_layout(
+        title=f"Total {mode} Net Exposure by Strike", 
+        template="plotly_dark", 
+        height=400,
+        xaxis_title="Strike",
+        yaxis_title="USD ($)"
+    )
 
     return fig_h, fig_b
 
