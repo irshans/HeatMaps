@@ -170,13 +170,16 @@ def render_plots(df, ticker, S, mode):
             row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
-    # Color scheme matching reference image
+    # Color scheme matching reference image - vibrant blue to yellow
     colorscale = [
-        [0.0, '#0d1b2a'],    # Very dark blue (negative)
-        [0.25, '#1b263b'],   # Dark blue
-        [0.5, '#415a77'],    # Medium blue-gray (zero)
-        [0.75, '#778da9'],   # Light blue-gray
-        [1.0, '#e0e1dd']     # Light gray (positive)
+        [0.0, '#1a1f3a'],    # Very dark blue (most negative)
+        [0.2, '#2d4a7c'],    # Dark blue
+        [0.4, '#4a7ba7'],    # Medium blue
+        [0.5, '#6fa3c7'],    # Light blue (near zero)
+        [0.6, '#95c9e0'],    # Cyan
+        [0.75, '#c8e4f4'],   # Very light blue
+        [0.85, '#fef5d4'],   # Light yellow
+        [1.0, '#fef08a']     # Bright yellow (most positive)
     ]
     
     fig_h = go.Figure(data=go.Heatmap(
