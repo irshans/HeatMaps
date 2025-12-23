@@ -4,7 +4,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
-from datetime import timedelta, datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from scipy.stats import norm
 import time
 import random
@@ -15,34 +16,44 @@ st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.30
 RISK_FREE_RATE = 0.042
+SECONDS_IN_YEAR = 365 * 24 * 3600
 
 # -------------------------
 # Holiday & Date Logic
 # -------------------------
 def get_actual_trading_day(date_str):
-    dt = pd.to_datetime(date_str)
-    holidays = [
+    dt = pd.to_datetime(date_str).date()
+    holidays = {
         '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
         '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
         '2026-01-01'
-    ]
-    while dt.weekday() > 4:
-        dt -= timedelta(days=1)
-    while dt.strftime('%Y-%m-%d') in holidays:
-        dt -= timedelta(days=1)
-        while dt.weekday() > 4:
-            dt -= timedelta(days=1)
+    }
+    # Move backwards until weekday and not a holiday
+    while dt.weekday() > 4 or dt.strftime('%Y-%m-%d') in holidays:
+        dt = dt - timedelta(days=1)
     return dt.strftime('%Y-%m-%d')
 
 # -------------------------
 # Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
-    # Fix for 0DTE: Floor T at 1 minute to avoid division by zero
-    T_eff = max(T, 0.00001)
-    sig_eff = max(sigma, 0.01)
-    
+    """
+    Return (gamma, delta).
+    Expects:
+      - S, K: floats
+      - r: annual risk-free rate (decimal)
+      - sigma: implied vol in decimal (e.g. 0.30)
+      - T: time to expiry in years (float)
+    Safety:
+      - T should be > 0; this function still guards against a zero T.
+      - sigma gets a small floor to avoid division by zero or extreme values.
+    """
+    MIN_T_YEARS = 60 / SECONDS_IN_YEAR  # floor to 60 seconds (1 minute)
+    T_eff = max(T, MIN_T_YEARS)
+    sig_eff = max(sigma, 0.01)  # floor IV at 1% to avoid extreme gamma
+
     d1 = (math.log(S / K) + (r + 0.5 * sig_eff**2) * T_eff) / (sig_eff * math.sqrt(T_eff))
+    # gamma same for call/put in BS
     gamma = norm.pdf(d1) / (S * sig_eff * math.sqrt(T_eff))
     delta = norm.cdf(d1) if option_type == "call" else norm.cdf(d1) - 1
     return gamma, delta
@@ -60,12 +71,12 @@ def fetch_data_safe(ticker, max_exp):
         hist = stock.history(period="5d")
         if hist.empty:
             return None, None
-        S = hist["Close"].iloc[-1]
+        S = float(hist["Close"].iloc[-1])
 
         all_exps = stock.options
         if not all_exps:
             return S, None
-        
+
         target_exps = all_exps[:max_exp]
         dfs = []
         progress_text = st.empty()
@@ -76,7 +87,7 @@ def fetch_data_safe(ticker, max_exp):
             success = False
             for attempt in range(3):
                 try:
-                    time.sleep(random.uniform(0.3, 0.6))
+                    time.sleep(random.uniform(0.25, 0.6))
                     chain = stock.option_chain(exp)
                     t_date = get_actual_trading_day(exp)
                     calls = chain.calls.assign(option_type="call", expiration=t_date)
@@ -93,7 +104,8 @@ def fetch_data_safe(ticker, max_exp):
 
         if not dfs:
             return S, None
-        return S, pd.concat(dfs, ignore_index=True)
+        options_df = pd.concat(dfs, ignore_index=True)
+        return S, options_df
     except Exception as e:
         st.error(f"Data fetch error: {e}")
         return None, None
@@ -106,72 +118,105 @@ def process_exposure(df, S, s_range, model_type):
         return pd.DataFrame()
 
     df = df.copy()
-    now = datetime.now()
-    today = now.date()
-    
-    # 0DTE Fix: Calculate T based on seconds remaining until 4:00 PM ET
-    df["exp_dt_obj"] = pd.to_datetime(df["expiration"])
-    df["exp_date_only"] = df["exp_dt_obj"].dt.date
-    
-    # Filter: Keep strikes in range AND expiration is today or later
+    # Use US/Eastern for 0DTE and expiry logic
+    eastern = ZoneInfo("US/Eastern")
+    now_eastern = datetime.now(tz=eastern)
+    today = now_eastern.date()
+
+    # Normalize expiration to date string already provided; create date objects
+    df["exp_dt_obj"] = pd.to_datetime(df["expiration"]).dt.date
+    df["exp_date_only"] = df["exp_dt_obj"]
+
+    # Filter by strike range and expirations today or later
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["exp_date_only"] >= today)]
 
     res = []
     for _, row in df.iterrows():
-        K = float(row["strike"])
-        # Precise T calculation for 0DTE
-        exp_close = pd.to_datetime(row["expiration"]).replace(hour=16, minute=0)
-        seconds_left = (exp_close - now).total_seconds()
-        
-        # Fraction of year
-        T = max(seconds_left, 60) / (365 * 24 * 3600)
+        try:
+            K = float(row["strike"])
+        except Exception:
+            continue
+
+        # build expiration datetime at 16:00 US/Eastern
+        exp_date = pd.to_datetime(row["expiration"]).date()
+        exp_close = datetime(exp_date.year, exp_date.month, exp_date.day, 16, 0, tzinfo=eastern)
+        seconds_left = (exp_close - now_eastern).total_seconds()
+
+        # if expiry already passed (rare due to filter), skip
+        if seconds_left <= 0:
+            # skip intraday expirations that have already passed 16:00 ET
+            continue
+
+        # T in years (ACT seconds / seconds in year)
+        MIN_SECONDS = 60  # floor to 60 seconds for numerical stability
+        seconds_for_T = max(seconds_left, MIN_SECONDS)
+        T = seconds_for_T / SECONDS_IN_YEAR
 
         oi = row.get("openInterest") or 0
         vol = row.get("volume") or 0
-        liq = oi if oi > 0 else vol
-        if liq <= 0: continue
+        liq = max(oi, vol)  # use the larger of OI/volume as a liquidity proxy
+        if liq <= 0:
+            continue
 
-        iv = row["impliedVolatility"]
-        if not (0.02 < iv < 4.0): iv = FALLBACK_IV
+        iv = row.get("impliedVolatility")
+        if iv is None or pd.isna(iv) or not (0.02 < float(iv) < 4.0):
+            iv = FALLBACK_IV
+        else:
+            iv = float(iv)
 
         gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
+        # Determine dealer position multiplier for each option type.
+        # dealer_pos = +1 if dealer is LONG that option, -1 if dealer is SHORT that option.
         if model_type == "Dealer Short All (Absolute Stress)":
-            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+            dealer_pos = -1  # dealer short all options
         else:
-            gex = (-gamma if row["option_type"] == "call" else gamma) * S**2 * 0.01 * CONTRACT_SIZE * liq
+            # "Short Calls / Long Puts"
+            dealer_pos = -1 if row["option_type"] == "call" else +1
 
-        dex = -delta * S * CONTRACT_SIZE * liq
+        # GEX: dealer gamma exposure per option = dealer_pos * gamma * S^2 * 0.01 * contract_size * contracts
+        # (0.01 = effect of a 1% move on dollar exposure)
+        gex = dealer_pos * gamma * (S ** 2) * 0.01 * CONTRACT_SIZE * liq
+
+        # DEX: dealer delta exposure in dollars = dealer_pos * delta * S * contract_size * contracts
+        dex = dealer_pos * delta * S * CONTRACT_SIZE * liq
+
         res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "dex": dex})
 
+    if not res:
+        return pd.DataFrame()
     return pd.DataFrame(res)
 
 # -------------------------
 # Visualizations
 # -------------------------
 def render_plots(df, ticker, S, mode):
-    if df.empty: 
+    if df.empty:
         return None, None
 
-    val_col = mode.lower()
+    val_col = mode.lower()  # 'gex' or 'dex'
     agg = df.groupby('strike')[val_col].sum().sort_index()
     pivot = df.pivot_table(
-        index='strike', 
-        columns='expiry', 
-        values=val_col, 
-        aggfunc='sum', 
+        index='strike',
+        columns='expiry',
+        values=val_col,
+        aggfunc='sum',
         fill_value=0
     ).sort_index(ascending=False)
 
     z_raw = pivot.values
+    # scale for visual effect but keep sign
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** 0.5)
 
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
 
+    if not y_labs:
+        return None, None
+
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
-    # Formatting tooltips with -$1,250K logic
+    # Build hover text using raw values (not scaled)
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
@@ -179,47 +224,63 @@ def render_plots(df, ticker, S, mode):
             val = z_raw[i, j]
             prefix = "-" if val < 0 else ""
             v_abs = abs(val)
-            formatted = f"{prefix}${v_abs/1e6:,.2f}M" if v_abs >= 1e6 else f"{prefix}${v_abs/1e3:,.1f}K"
+            # format based on absolute size
+            if v_abs >= 1e6:
+                formatted = f"{prefix}${v_abs/1e6:,.2f}M"
+            elif v_abs >= 1e3:
+                formatted = f"{prefix}${v_abs/1e3:,.1f}K"
+            else:
+                formatted = f"{prefix}${v_abs:,.0f}"
             row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
     colorscale = [
-        [0.0, '#2d0052'], [0.2, '#1a1f4d'], [0.35, '#1e3a5f'], [0.5, '#1f4d4d'], 
+        [0.0, '#2d0052'], [0.2, '#1a1f4d'], [0.35, '#1e3a5f'], [0.5, '#1f4d4d'],
         [0.65, '#2d5a3d'], [0.8, '#6b7c1f'], [0.9, '#d4a017'], [1.0, '#ffd700']
     ]
-    
+
+    # avoid zero range when normalizing later
+    z_min = z_scaled.min() if z_scaled.size else 0
+    z_max = z_scaled.max() if z_scaled.size else 0
+
     fig_h = go.Figure(data=go.Heatmap(
         z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
         colorscale=colorscale, zmid=0, showscale=True
     ))
 
-    # Cell annotations
-    max_abs_val = np.max(np.abs(z_raw))
+    # Cell annotations (show only above threshold)
+    max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < 500: continue
+            if abs(val) < 500:  # threshold for showing annotation
+                continue
             prefix = "-" if val < 0 else ""
             txt = f"{prefix}${abs(val)/1e3:,.0f}K"
-            if abs(val) == max_abs_val: txt += " ⭐"
-            
+            if abs(val) == max_abs_val and max_abs_val > 0:
+                txt += " ⭐"
+
             cell_val = z_scaled[i, j]
-            z_norm = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
+            if z_max != z_min:
+                z_norm = (cell_val - z_min) / (z_max - z_min)
+            else:
+                z_norm = 0.5
             text_color = "black" if z_norm > 0.55 else "white"
-            
+
             fig_h.add_annotation(
                 x=exp, y=strike, text=txt, showarrow=False,
-                font=dict(color=text_color, size=12, family="Arial"), 
+                font=dict(color=text_color, size=12, family="Arial"),
                 xref="x", yref="y"
             )
 
-    # Highlight background for spot strike
-    strike_diffs = np.diff(sorted(y_labs))
+    # Highlight background for spot strike (approx paddding based on strikes spacing)
+    sorted_strikes = sorted(y_labs)
+    strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
     padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
 
     fig_h.add_shape(
         type="rect", xref="paper", yref="y",
-        x0=-0.08, x1=1.0, 
+        x0=-0.08, x1=1.0,
         y0=closest_strike - padding, y1=closest_strike + padding,
         fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below"
     )
@@ -230,24 +291,25 @@ def render_plots(df, ticker, S, mode):
         xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
         yaxis=dict(
             title="Strike", tickfont=dict(size=12),
-            autorange=True, tickmode='array', tickvals=y_labs, 
+            autorange=True, tickmode='array', tickvals=y_labs,
             ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]
         ),
         margin=dict(l=80, r=40, t=100, b=40)
     )
 
-    # Bar chart
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
+    # Bar chart: net exposure by strike
+    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values,
                              marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(
         title=f"Net {mode} by Strike", template="plotly_dark", height=400,
-        xaxis=dict(title="Strike", tickformat=",d"), 
+        xaxis=dict(title="Strike", tickformat=",d"),
         yaxis=dict(title="Exposure ($)", tickformat="$,.2s")
     )
-    # Small arrowhead marker for Spot
+
+    # place spot marker at the closest strike (so it shows up on x axis)
     fig_b.add_annotation(
-        x=S, y=0, text="▲", showarrow=False, 
-        font=dict(color="yellow", size=16), yref="paper", yshift=-20
+        x=closest_strike, y=0, text="▲ Spot", showarrow=False,
+        font=dict(color="yellow", size=12), yref="paper", yshift=-20
     )
 
     return fig_h, fig_b
@@ -257,7 +319,7 @@ def render_plots(df, ticker, S, mode):
 # -------------------------
 def main():
     st.title("📈 GEX / DEX Pro (0DTE Live)")
-    
+
     with st.sidebar:
         st.header("Control Panel")
         ticker = st.text_input("Ticker", "SPY").upper().strip()
@@ -273,14 +335,14 @@ def main():
 
         if S and raw_df is not None and not raw_df.empty:
             processed = process_exposure(raw_df, S, s_range, model_type)
-            
+
             if not processed.empty:
                 t_gex = processed["gex"].sum() / 1e9
                 t_dex = processed["dex"].sum() / 1e9
-                
+
                 p_g = "-" if t_gex < 0 else ""
                 p_d = "-" if t_dex < 0 else ""
-                
+
                 c1, c2 = st.columns(2)
                 c1.metric("Net Dealer GEX", f"{p_g}${abs(t_gex):,.2f}B")
                 c2.metric("Net Dealer DEX", f"{p_d}${abs(t_dex):,.2f}B")
@@ -289,7 +351,7 @@ def main():
                 if h_fig: st.plotly_chart(h_fig, use_container_width=True)
                 if b_fig: st.plotly_chart(b_fig, use_container_width=True)
             else:
-                st.warning("No data found in range. Check if market is open.")
+                st.warning("No data found in range. Check if market is open or broaden strike range.")
         else:
             st.error("Fetch failed. Try manually entering ^SPXW for SPX 0DTE.")
 
