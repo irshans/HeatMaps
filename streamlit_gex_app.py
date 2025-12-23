@@ -206,6 +206,14 @@ def render_plots(df, ticker, S, mode):
 
     timestamp = datetime.now().strftime("%H:%M:%S")
     
+    # Custom tick labels: highlight spot strike with bold white text
+    ticktext = []
+    for s in y_labs:
+        if s == closest_strike:
+            ticktext.append(f"<b><span style='color:white'>{s:,.0f}</span></b>")
+        else:
+            ticktext.append(f"{s:,.0f}")
+
     fig_h.update_layout(
         title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:,.2f}",
         template="plotly_dark", height=900,
@@ -216,38 +224,39 @@ def render_plots(df, ticker, S, mode):
             autorange=True,
             tickmode='array', 
             tickvals=y_labs, 
-            ticktext=[f"{s:,.0f}" for s in y_labs]
+            ticktext=ticktext
         ),
         margin=dict(l=80, r=120, t=100, b=40)
     )
 
-    # === SPOT STRIKE HIGHLIGHT: Red background behind the closest strike label ===
+    # Red background highlight behind the spot strike row
     if len(y_labs) > 1:
-        strike_step = y_labs[1] - y_labs[0]  # Assume uniform spacing
-        padding = strike_step * 0.4
+        strike_step = y_labs[1] - y_labs[0]  # Assume uniform spacing (common for options)
+        padding = strike_step * 0.45
     else:
-        padding = 10  # Fallback for single strike
+        padding = 10
 
     fig_h.add_shape(
         type="rect",
         xref="paper", yref="y",
-        x0=0, x1=0.18,  # Covers the y-axis label area
+        x0=0, x1=1,  # Full width for subtle row highlight
         y0=closest_strike - padding,
         y1=closest_strike + padding,
-        fillcolor="rgba(220, 20, 20, 0.7)",  # Bold red with transparency
+        fillcolor="rgba(220, 20, 20, 0.15)",  # Very subtle red tint across the row
         line=dict(width=0),
         layer="below"
     )
 
-    # Make the spot strike label bold and white for maximum contrast
-    fig_h.add_annotation(
+    # Optional: thicker left bar for stronger left-side highlight
+    fig_h.add_shape(
+        type="rect",
         xref="paper", yref="y",
-        x=0.16, y=closest_strike,
-        text=f"{closest_strike:,.0f}",
-        showarrow=False,
-        font=dict(color="white", size=14, family="Arial Black"),
-        align="right",
-        bgcolor="rgba(0,0,0,0)"  # Transparent background so shape shows through
+        x0=0, x1=0.12,
+        y0=closest_strike - padding,
+        y1=closest_strike + padding,
+        fillcolor="rgba(220, 20, 20, 0.6)",
+        line=dict(width=0),
+        layer="below"
     )
 
     # Bar chart
