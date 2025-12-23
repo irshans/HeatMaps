@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 import yfinance as yf
 from datetime import timedelta
 from scipy.stats import norm
-import requests
 import time
 import random
 
@@ -47,7 +46,7 @@ def get_greeks(S, K, r, sigma, T, option_type):
     return gamma, delta
 
 # -------------------------
-# Data Fetcher (Resilient)
+# Data Fetcher
 # -------------------------
 @st.cache_data(ttl=300)
 def fetch_data_safe(ticker, max_exp):
@@ -55,7 +54,6 @@ def fetch_data_safe(ticker, max_exp):
         ticker = f"^{ticker.upper()}"
 
     stock = yf.Ticker(ticker)
-
     try:
         hist = stock.history(period="5d")
         if hist.empty:
@@ -86,7 +84,6 @@ def fetch_data_safe(ticker, max_exp):
                     break
                 except Exception:
                     time.sleep(2)
-
             prog_bar.progress((i + 1) / len(target_exps))
 
         progress_text.empty()
@@ -95,7 +92,6 @@ def fetch_data_safe(ticker, max_exp):
         if not dfs:
             return S, None
         return S, pd.concat(dfs, ignore_index=True)
-
     except Exception as e:
         st.error(f"Data fetch error: {e}")
         return None, None
@@ -108,7 +104,6 @@ def process_exposure(df, S, s_range, model_type):
         return pd.DataFrame()
 
     df = df.copy()
-    # Aligning time to Market Close (4 PM)
     now = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16)
     df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
@@ -118,7 +113,9 @@ def process_exposure(df, S, s_range, model_type):
     res = []
     for _, row in df.iterrows():
         K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
-        liq = (row.get("openInterest") or 0) if (row.get("openInterest") or 0) > 0 else (row.get("volume") or 0)
+        oi = row.get("openInterest") or 0
+        vol = row.get("volume") or 0
+        liq = oi if oi > 0 else vol
         
         if liq <= 0: continue
 
@@ -127,18 +124,15 @@ def process_exposure(df, S, s_range, model_type):
 
         gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        # MODEL SELECTION
         if model_type == "Dealer Short All (Absolute Stress)":
             gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
         else:
-            # Short Calls / Long Puts (Claude's Logic)
             if row["option_type"] == "call":
                 gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
             else:
                 gex = gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
 
         dex = -delta * S * CONTRACT_SIZE * liq
-
         res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "dex": dex})
 
     return pd.DataFrame(res)
@@ -175,23 +169,18 @@ def render_plots(df, ticker, S, mode, boost):
     return fig_h, fig_b
 
 # -------------------------
-# Main App Interface
+# Main App
 # -------------------------
 def main():
-    st.title("📈 GEX / DEX Pro - Dealer Exposure")
+    st.title("📈 GEX / DEX Pro")
     
     with st.sidebar:
         st.header("Control Panel")
         ticker = st.text_input("Ticker", "SPY").upper().strip()
         mode = st.radio("Metric", ["GEX", "DEX"])
         model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
-        
         max_exp = st.slider("Max Expirations", 1, 15, 6)
-        
-        # SLIDER CUSTOMIZATION: Min 10, Max 100, Default 25
-        # Step is 1 to allow 25, but UI will show intervals naturally
         s_range = st.slider("Strike Range ± Spot", 10, 100, 25, step=1)
-        
         boost = st.slider("Heatmap Contrast Boost", 1.0, 5.0, 2.5)
         run = st.button("Calculate Exposure", type="primary")
 
@@ -213,9 +202,9 @@ def main():
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode, boost)
                 
-                # FIXED: Replacement of use_container_width with width="container"
-                st.plotly_chart(h_fig, width="container")
-                st.plotly_chart(b_fig, width="container")
+                # UPDATED: width='stretch' is the correct 2026 replacement
+                st.plotly_chart(h_fig, width="stretch")
+                st.plotly_chart(b_fig, width="stretch")
             else:
                 st.warning("No liquidity found in that range.")
         else:
