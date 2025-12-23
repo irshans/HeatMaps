@@ -14,20 +14,7 @@ st.set_page_config(page_title="GEX Pro - Stable", page_icon="📊", layout="wide
 
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.30
-RISK_FREE_RATE = 0.045
-
-# -------------------------
-# Fail-Safe Session
-# -------------------------
-@st.cache_resource
-def get_global_session():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    })
-    return session
+RISK_FREE_RATE = 0.042
 
 # -------------------------
 # Holiday Rollback
@@ -66,8 +53,7 @@ def fetch_data_safe(ticker, max_exp):
     if ticker.upper() in ["SPX", "NDX", "RUT"] and not ticker.startswith("^"):
         ticker = f"^{ticker.upper()}"
 
-    session = get_global_session()
-    stock = yf.Ticker(ticker)  # No session argument
+    stock = yf.Ticker(ticker)
 
     try:
         hist = stock.history(period="5d")
@@ -125,8 +111,15 @@ def process_exposure(df, S, s_range):
 
     df = df.copy()
     now = pd.Timestamp.now(tz='US/Eastern').normalize() + pd.Timedelta(hours=16)
-    df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
+
+    # Make expiry datetime tz-aware in US/Eastern (same as now)
+    expiry_dates = pd.to_datetime(df["expiration"])
+    expiry_dt_localized = expiry_dates.dt.tz_localize('US/Eastern')  # First make aware with ET
+    df["expiry_dt"] = expiry_dt_localized + pd.Timedelta(hours=16)
+
+    # Now safe to subtract
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
+
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > 0)]
 
     res = []
