@@ -170,16 +170,16 @@ def render_plots(df, ticker, S, mode):
             row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
         h_text.append(row)
 
-    # Color scheme - dark purple to dark yellow through dark blues/greens
+    # Color scheme - dark purple to bright yellow through dark blues/greens
     colorscale = [
         [0.0, '#2d0052'],    # Dark purple (most negative)
         [0.2, '#1a1f4d'],    # Dark blue-purple
         [0.35, '#1e3a5f'],   # Dark blue
         [0.5, '#1f4d4d'],    # Dark teal/green (zero)
         [0.65, '#2d5a3d'],   # Dark green
-        [0.8, '#4a5c2a'],    # Dark olive
-        [0.9, '#6b5c1f'],    # Dark gold
-        [1.0, '#8b6914']     # Dark yellow (most positive)
+        [0.8, '#6b7c1f'],    # Olive
+        [0.9, '#d4a017'],    # Bright gold
+        [1.0, '#ffd700']     # Bright yellow (most positive)
     ]
     
     fig_h = go.Figure(data=go.Heatmap(
@@ -225,11 +225,16 @@ def render_plots(df, ticker, S, mode):
                 txt += " ⭐"
             
             # Determine text color based on background intensity
+            # Lighter colors (positive values) = black text
+            # Darker colors (negative values) = white text
             cell_val = z_scaled[i, j]
-            if abs(cell_val) > np.max(np.abs(z_scaled)) * 0.3:
-                text_color = "white"
-            else:
+            z_normalized = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
+            
+            # Use black text for lighter colors (threshold at 0.6)
+            if z_normalized > 0.6:
                 text_color = "black"
+            else:
+                text_color = "white"
             
             fig_h.add_annotation(
                 x=exp, 
