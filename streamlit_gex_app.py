@@ -38,7 +38,7 @@ def get_actual_trading_day(date_str):
 # Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
-    if T <= 0: # Handle 0DTE decay
+    if T <= 0:
         T = 0.00001 
     if sigma <= 0:
         sigma = FALLBACK_IV
@@ -107,18 +107,11 @@ def process_exposure(df, S, s_range, model_type):
 
     df = df.copy()
     
-    # Use timezone-aware Eastern Time
     now = pd.Timestamp.now(tz='US/Eastern').normalize() + pd.Timedelta(hours=16)
-    
-    # Localize expiry dates to US/Eastern before adding 16:00
     expiry_dates = pd.to_datetime(df["expiration"])
     expiry_dt_localized = expiry_dates.dt.tz_localize('US/Eastern')
     df["expiry_dt"] = expiry_dt_localized + pd.Timedelta(hours=16)
-    
-    # Safe subtraction, T will be small positive for 0DTE during the day
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
-    
-    # Relax filter slightly for very short T
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > -0.0001)]
 
     res = []
@@ -127,7 +120,6 @@ def process_exposure(df, S, s_range, model_type):
         oi = row.get("openInterest") or 0
         vol = row.get("volume") or 0
         liq = oi if oi > 0 else vol
-        
         if liq <= 0: continue
 
         iv = row["impliedVolatility"]
@@ -138,10 +130,7 @@ def process_exposure(df, S, s_range, model_type):
         if model_type == "Dealer Short All (Absolute Stress)":
             gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
         else:
-            if row["option_type"] == "call":
-                gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
-            else:
-                gex = gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq if row["option_type"] == "call" else gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
 
         dex = -delta * S * CONTRACT_SIZE * liq
         res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "dex": dex})
@@ -170,6 +159,10 @@ def render_plots(df, ticker, S, mode):
 
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
+
+    # Find the strike closest to current spot price
+    closest_strike = min(y_labs, key=lambda x: abs(x - S))
+
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
@@ -193,22 +186,18 @@ def render_plots(df, ticker, S, mode):
 
     max_abs_val = np.max(np.abs(z_raw))
     
-    # Add annotations for cells
+    # Cell annotations
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
             if abs(val) < 500: continue
-            
             prefix = "-" if val < 0 else ""
             v_abs = abs(val)
             txt = f"{prefix}${v_abs/1e3:,.0f}K"
-            
             if abs(val) == max_abs_val: txt += " ⭐"
-            
             cell_val = z_scaled[i, j]
             z_norm = (cell_val - z_scaled.min()) / (z_scaled.max() - z_scaled.min()) if z_scaled.max() != z_scaled.min() else 0.5
             text_color = "black" if z_norm > 0.55 else "white"
-            
             fig_h.add_annotation(
                 x=exp, y=strike, text=txt, showarrow=False,
                 font=dict(color=text_color, size=12, family="Arial"), 
@@ -221,24 +210,45 @@ def render_plots(df, ticker, S, mode):
         title=f"{ticker} {mode} Exposure Map | Last Update: {timestamp} | Spot: ${S:,.2f}",
         template="plotly_dark", height=900,
         xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
-        yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True,
-                   tickmode='array', tickvals=y_labs, ticktext=[f"{s:,.0f}" for s in y_labs]),
+        yaxis=dict(
+            title="Strike", 
+            tickfont=dict(size=12), 
+            autorange=True,
+            tickmode='array', 
+            tickvals=y_labs, 
+            ticktext=[f"{s:,.0f}" for s in y_labs]
+        ),
         margin=dict(l=80, r=120, t=100, b=40)
     )
-    
-    # Updated spot line: thinner, dotted, semi-transparent
-    fig_h.add_hline(
-        y=S,
-        line_dash="dot",
-        line_color="yellow",
-        line_width=1.5,
-        opacity=0.7,
-        annotation_text=f"SPOT: ${S:,.2f}",
-        annotation_position="top right",
-        annotation_font=dict(size=11, color="yellow")
+
+    # Highlight the closest strike on the y-axis with red background and white text
+    fig_h.update_yaxes(
+        tickfont=dict(color=["white" if s == closest_strike else "#cccccc" for s in y_labs],
+                      size=[14 if s == closest_strike else 12 for s in y_labs]),
+        ticklabelmode="instant"
     )
 
-    # Bar chart
+    # Apply red background only to the spot strike label
+    for annotation in fig_h.layout.annotations:
+        if annotation.y == closest_strike:
+            annotation.bgcolor = "rgba(200, 0, 0, 0.8)"
+            annotation.bordercolor = "red"
+            annotation.borderwidth = 1
+            annotation.borderpad = 4
+
+    # Alternative robust method: add a separate shape for background
+    fig_h.add_shape(
+        type="rect",
+        xref="paper", yref="y",
+        x0=0, x1=0.15,  # Covers left margin where y-labels are
+        y0=closest_strike - (y_labs[1] - y_labs[0]) * 0.4 if len(y_labs) > 1 else closest_strike - 5,
+        y1=closest_strike + (y_labs[1] - y_labs[0]) * 0.4 if len(y_labs) > 1 else closest_strike + 5,
+        fillcolor="rgba(200, 0, 0, 0.7)",
+        line=dict(width=0),
+        layer="below"
+    )
+
+    # Bar chart (unchanged)
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
                              marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400,
@@ -252,7 +262,7 @@ def render_plots(df, ticker, S, mode):
 # Main App
 # -------------------------
 def main():
-    st.title("📈 GEX / DEX Pro")
+    st.title("GEX / DEX Pro")
     
     with st.sidebar:
         st.header("Control Panel")
