@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
-from datetime import timedelta
+from datetime import timedelta, datetime
 from scipy.stats import norm
 import time
 import random
@@ -141,39 +141,42 @@ def process_exposure(df, S, s_range, model_type):
 # Visualizations
 # -------------------------
 def render_plots(df, ticker, S, mode, boost):
-    if df.empty: return None, None
+    if df.empty: 
+        return None, None
 
     val_col = mode.lower()
     agg = df.groupby('strike')[val_col].sum().sort_index()
-    pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
+    pivot = df.pivot_table(
+        index='strike', 
+        columns='expiry', 
+        values=val_col, 
+        aggfunc='sum', 
+        fill_value=0
+    ).sort_index(ascending=False)
 
     z_raw = pivot.values
-    # Scaled Z for color mapping
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** (1.0 / boost))
 
+    # Create hover text with actual values
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
-
-    # Create Hover Text and Label Text
     h_text = []
     for i, strike in enumerate(y_labs):
-        row_h = []
-        for j, ex in enumerate(x_labs):
+        row = []
+        for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            # Format numbers for readability
-            if abs(val) >= 1e9:
-                fmt = f"${val/1e9:.2f}B"
-            elif abs(val) >= 1e6:
-                fmt = f"${val/1e6:.1f}M"
-            elif abs(val) >= 1e3:
-                fmt = f"${val/1e3:.0f}K"
-            else:
-                fmt = f"${val:.0f}"
-            
-            row_h.append(f"Exp: {ex}<br>Strike: {strike}<br>{mode}: {fmt}")
-        h_text.append(row_h)
+            formatted = f"${val/1e6:.2f}M" if abs(val) >= 1e6 else f"${val/1e3:.1f}K"
+            row.append(f"Strike: ${strike:.0f}<br>Expiry: {exp}<br>{mode}: {formatted}")
+        h_text.append(row)
 
-    colorscale = 'RdBu' if mode == "DEX" else [[0, '#32005A'], [0.3, '#BF00FF'], [0.5, '#000000'], [0.7, '#FFB400'], [1, '#FFFFB4']]
+    # UPDATED COLORSCALE - Blue to Yellow gradient
+    colorscale = [
+        [0.0, '#1e3a5f'],    # Dark blue (negative)
+        [0.25, '#2563eb'],   # Medium blue
+        [0.5, '#0ea5e9'],    # Cyan blue (zero)
+        [0.75, '#fbbf24'],   # Yellow-orange
+        [1.0, '#fef08a']     # Light yellow (positive)
+    ]
     
     fig_h = go.Figure(data=go.Heatmap(
         z=z_scaled, 
@@ -183,60 +186,102 @@ def render_plots(df, ticker, S, mode, boost):
         hoverinfo="text",
         colorscale=colorscale, 
         zmid=0, 
-        colorbar=dict(title=f"Intensity ({mode})")
+        colorbar=dict(
+            title=mode,
+            titleside="right",
+            tickmode="linear",
+            tick0=z_scaled.min(),
+            dtick=(z_scaled.max() - z_scaled.min()) / 5
+        ),
+        hovertemplate='%{text}<extra></extra>'
     ))
 
-    # --- ADD TEXT ANNOTATIONS (The fix for missing values) ---
-    # We only show text for the top 30% of values to keep it clean
-    limit = np.percentile(np.abs(z_raw), 70) if z_raw.size > 0 else 0
-    
+    # Add annotations for ALL cells (like the reference image)
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < limit or val == 0:
+            if abs(val) < 1000:  # Skip very small values
                 continue
             
-            # Formatting the display label
+            # Format text
             if abs(val) >= 1e6:
-                display_txt = f"{val/1e6:.1f}M"
+                txt = f"${val/1e6:.1f}M"
+            elif abs(val) >= 1e3:
+                txt = f"${val/1e3:.0f}K"
             else:
-                display_txt = f"{val/1e3:.0f}K"
-
+                txt = f"${val:.0f}"
+            
+            # Determine text color based on background intensity
+            cell_val = z_scaled[i, j]
+            if abs(cell_val) > np.max(np.abs(z_scaled)) * 0.3:
+                text_color = "white"
+            else:
+                text_color = "black"
+            
             fig_h.add_annotation(
-                x=exp, y=strike,
-                text=display_txt,
+                x=exp, 
+                y=strike, 
+                text=txt, 
                 showarrow=False,
-                font=dict(
-                    color="white" if abs(z_scaled[i,j]) > (np.max(np.abs(z_scaled)) * 0.4) else "#A0A0A0",
-                    size=10
-                )
+                font=dict(color=text_color, size=8),
+                xref="x",
+                yref="y"
             )
 
+    # Get current timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     fig_h.update_layout(
-        title=f"{ticker} {mode} Exposure Map", 
-        template="plotly_dark", 
-        height=800,
-        xaxis=dict(type='category', title="Expiration Date"), 
-        yaxis=dict(title="Strike Price", tickformat=".0f")
+        title=f"SPY {mode} - {timestamp} - Current Price: ${S:.2f}",
+        template="plotly_dark",
+        height=900,
+        xaxis=dict(
+            type='category', 
+            title="",
+            tickfont=dict(size=10),
+            side='top'  # Move dates to top like reference
+        ),
+        yaxis=dict(
+            title="Strike",
+            tickfont=dict(size=9),
+            autorange=True
+        ),
+        font=dict(size=10),
+        margin=dict(l=80, r=120, t=80, b=40)
     )
     
-    # Add Spot Line
-    fig_h.add_hline(y=S, line_dash="dash", line_color="cyan", 
-                    annotation_text=f"Current Spot: {S:.2f}", 
-                    annotation_position="top right")
+    # Add horizontal line at current price
+    fig_h.add_hline(
+        y=S, 
+        line_dash="solid", 
+        line_color="yellow", 
+        line_width=2,
+        annotation_text=f"Current: ${S:.2f}",
+        annotation_position="right"
+    )
 
-    # Bar Chart
+    # Bar chart
+    colors = ['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]
     fig_b = go.Figure(go.Bar(
         x=agg.index, 
         y=agg.values, 
-        marker_color=['#FF00FF' if v < 0 else '#FFFF00' for v in agg.values]
+        marker_color=colors,
+        hovertemplate='Strike: $%{x:.0f}<br>Total: $%{y:.2s}<extra></extra>'
     ))
+    
     fig_b.update_layout(
-        title=f"Total {mode} Net Exposure by Strike", 
+        title=f"Total {mode} by Strike", 
         template="plotly_dark", 
         height=400,
-        xaxis_title="Strike",
-        yaxis_title="USD ($)"
+        xaxis_title="Strike Price",
+        yaxis_title=f"{mode} Exposure ($)"
+    )
+    
+    fig_b.add_vline(
+        x=S, 
+        line_dash="dash", 
+        line_color="yellow",
+        annotation_text=f"Spot: ${S:.2f}"
     )
 
     return fig_h, fig_b
@@ -261,7 +306,7 @@ def main():
         with st.spinner(f"Analyzing {ticker} flow..."):
             S, raw_df = fetch_data_safe(ticker, max_exp)
 
-        if S and not raw_df.empty:
+        if S and raw_df is not None and not raw_df.empty:
             st.success(f"{ticker} Trading at ${S:.2f}")
             processed = process_exposure(raw_df, S, s_range, model_type)
             
@@ -275,9 +320,10 @@ def main():
 
                 h_fig, b_fig = render_plots(processed, ticker, S, mode, boost)
                 
-                # UPDATED: width='stretch' is the correct 2026 replacement
-                st.plotly_chart(h_fig, width="stretch")
-                st.plotly_chart(b_fig, width="stretch")
+                if h_fig:
+                    st.plotly_chart(h_fig, width="stretch")
+                if b_fig:
+                    st.plotly_chart(b_fig, width="stretch")
             else:
                 st.warning("No liquidity found in that range.")
         else:
