@@ -38,8 +38,10 @@ def get_actual_trading_day(date_str):
 # Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
-    if T <= 0 or sigma <= 0:
-        return 0.0, 0.0
+    if T <= 0: # Handle 0DTE decay
+        T = 0.00001 
+    if sigma <= 0:
+        sigma = FALLBACK_IV
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
     delta = norm.cdf(d1) if option_type == "call" else norm.cdf(d1) - 1
