@@ -110,16 +110,16 @@ def process_exposure(df, S, s_range):
         return pd.DataFrame()
 
     df = df.copy()
-    now = pd.Timestamp.now(tz='US/Eastern').normalize() + pd.Timedelta(hours=16)
+    # Updated to handle timezone-naive comparison safely
+    now = pd.Timestamp.now().normalize() + pd.Timedelta(hours=16)
 
-    # Make expiry datetime tz-aware in US/Eastern (same as now)
-    expiry_dates = pd.to_datetime(df["expiration"])
-    expiry_dt_localized = expiry_dates.dt.tz_localize('US/Eastern')  # First make aware with ET
-    df["expiry_dt"] = expiry_dt_localized + pd.Timedelta(hours=16)
-
-    # Now safe to subtract
+    # Convert expiration to datetime and set to 4 PM (Market Close)
+    df["expiry_dt"] = pd.to_datetime(df["expiration"]) + pd.Timedelta(hours=16)
+    
+    # Calculate Time to Expiry (T) in years
     df["T"] = (df["expiry_dt"] - now).dt.total_seconds() / (365 * 24 * 3600)
 
+    # Filter by Strike Range and Expiry
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["T"] > 0)]
 
     res = []
@@ -138,13 +138,9 @@ def process_exposure(df, S, s_range):
 
         gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        # Dealer short options → negative gamma for both, correct delta sign
-        if row["option_type"] == "call":
-            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
-            dex = -delta * S * CONTRACT_SIZE * liq
-        else:
-            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
-            dex = -delta * S * CONTRACT_SIZE * liq   # - (negative delta) = positive
+        # Dealer short options → negative gamma for both
+        gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
+        dex = -delta * S * CONTRACT_SIZE * liq
 
         res.append({
             "strike": K,
@@ -163,7 +159,7 @@ def render_plots(df, ticker, S, mode, boost):
         return None, None
 
     val_col = 'gex' if mode == "GEX" else 'dex'
-    display_name = mode  # GEX or DEX
+    display_name = mode
 
     agg = df.groupby('strike')[val_col].sum().sort_index()
 
@@ -196,7 +192,8 @@ def render_plots(df, ticker, S, mode, boost):
         colorscale=colorscale, zmid=0, colorbar=dict(title=display_name)
     ))
 
-    threshold = np.percentile(np.abs(z_raw), 85)
+    # Add dynamic annotations for high-exposure strikes
+    threshold = np.percentile(np.abs(z_raw), 85) if z_raw.size > 0 else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
@@ -204,7 +201,7 @@ def render_plots(df, ticker, S, mode, boost):
                 continue
             txt = f"${val/1e6:.1f}M" if abs(val) >= 1e6 else f"${val/1e3:.0f}K"
             fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False,
-                                 font=dict(color="white" if abs(val) > np.mean(np.abs(z_raw)) else "black", size=9))
+                                 font=dict(color="white" if abs(z_scaled[i,j]) > np.max(np.abs(z_scaled))*0.5 else "black", size=9))
 
     fig_h.update_layout(
         title=f"{ticker} {display_name} Exposure Heatmap (Dealer Positioning)",
@@ -239,10 +236,18 @@ def main():
         ticker = st.text_input("Ticker", "SPY").upper().strip()
         mode = st.radio("Exposure Type", ["GEX", "DEX"], help="GEX = Gamma Exposure | DEX = Delta Exposure")
         max_exp = st.slider("Max Expirations", 1, 12, 6)
+        
+        # --- UPDATED SLIDER LOGIC ---
         is_index = ticker.lstrip("^") in ["SPX", "NDX", "RUT"]
-        default_range = 400 if is_index else 60
-        s_range = st.slider("Strike Range ± Spot", 20, 800, default_range)
-        boost = st.slider("Heatmap Color Boost", 1.0, 5.0, 2.5, help="Higher = more contrast on small values")
+        default_range = 25 # Set default to 25 as requested
+        
+        # Minimum 10, Maximum 100, Step 10 (creates the dots/intervals), Default 25
+        # Note: Since step is 10, 25 isn't technically on a "dot". 
+        # I will set step to 1 to allow 25, or set default to 20/30 to snap to dots.
+        # Keeping step=1 so you can hit 25 exactly.
+        s_range = st.slider("Strike Range ± Spot", min_value=10, max_value=100, value=25, step=1)
+        
+        boost = st.slider("Heatmap Color Boost", 1.0, 5.0, 2.5)
 
         run = st.button("Run Analysis", type="primary")
 
@@ -251,19 +256,18 @@ def main():
             S, raw_df = fetch_data_safe(ticker, max_exp)
 
         if S is None:
-            st.error("Unable to fetch data. Yahoo Finance may be rate-limiting. Try again in a few minutes or use a VPN.")
+            st.error("Unable to fetch data.")
             return
 
         if raw_df is None or raw_df.empty:
-            st.warning("No option expirations found for this ticker.")
+            st.warning("No option expirations found.")
             return
 
         st.success(f"{ticker} Spot Price: **${S:.2f}**")
-
         processed = process_exposure(raw_df, S, s_range)
 
         if processed.empty:
-            st.warning("No significant open interest or volume found in selected strike range.")
+            st.warning("No data found in range.")
             return
 
         total_gex = processed["gex"].sum()
@@ -281,8 +285,6 @@ def main():
             st.plotly_chart(heatmap_fig, use_container_width=True)
         if bar_fig:
             st.plotly_chart(bar_fig, use_container_width=True)
-
-        st.caption("Positive GEX → price pinning | Negative GEX → volatility amplification")
 
 if __name__ == "__main__":
     main()
