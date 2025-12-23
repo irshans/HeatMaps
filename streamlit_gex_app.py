@@ -188,7 +188,6 @@ def render_plots(df, ticker, S, mode, boost):
         zmid=0, 
         colorbar=dict(
             title=mode,
-            titleside="right",
             tickmode="linear",
             tick0=z_scaled.min(),
             dtick=(z_scaled.max() - z_scaled.min()) / 5
