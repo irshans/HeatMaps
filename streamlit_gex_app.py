@@ -116,7 +116,7 @@ def process_exposure(df, S, s_range, model_type):
 
     res = []
     for _, row in df.iterrows():
-        K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
+        K, T = float(row["strike"]), max(float(row["T")), 0.00001)
         oi = row.get("openInterest") or 0
         vol = row.get("volume") or 0
         liq = oi if oi > 0 else vol
@@ -221,33 +221,51 @@ def render_plots(df, ticker, S, mode):
         margin=dict(l=80, r=120, t=100, b=40)
     )
 
-    # === RELIABLE SPOT STRIKE HIGHLIGHT ===
-    # Calculate padding based on strike spacing
+    # === CLEAN SPOT STRIKE HIGHLIGHT ===
+    # Padding for the red bar
     if len(y_labs) > 1:
-        padding = (y_labs[1] - y_labs[0]) * 0.45
+        padding = (y_labs[1] - y_labs[0]) * 0.5
     else:
         padding = 10
 
-    # Strong red bar on the left behind the strike label
+    # Red vertical bar behind the spot strike
     fig_h.add_shape(
         type="rect",
         xref="paper", yref="y",
-        x0=-0.08, x1=0.0,  # Extends slightly left of plot area
+        x0=-0.09, x1=-0.01,  # Thin bar left of the plot
         y0=closest_strike - padding,
         y1=closest_strike + padding,
-        fillcolor="#dc143c",  # Crimson red
+        fillcolor="#ff3333",  # Bright red
         line=dict(width=0),
         layer="below"
     )
 
-    # Bold white text overlay for the spot strike label
+    # Overwrite only the spot strike label: make it bold and white
+    # We hide the original by setting tick color to transparent for that one, then add our own
+    # First, make all tick labels transparent
+    fig_h.update_yaxes(tickfont=dict(color="rgba(0,0,0,0)"))  # Hide all default labels
+
+    # Add back normal gray labels for non-spot strikes
+    for strike in y_labs:
+        if strike != closest_strike:
+            fig_h.add_annotation(
+                xref="paper", yref="y",
+                x=-0.02,
+                y=strike,
+                text=f"{strike:,.0f}",
+                showarrow=False,
+                font=dict(color="#cccccc", size=12),
+                align="right"
+            )
+
+    # Add bold white label for spot strike
     fig_h.add_annotation(
         xref="paper", yref="y",
-        x=-0.02,  # Positioned just right of the red bar
+        x=-0.02,
         y=closest_strike,
         text=f"<b>{closest_strike:,.0f}</b>",
         showarrow=False,
-        font=dict(color="white", size=14, family="Arial"),
+        font=dict(color="white", size=14),
         align="right"
     )
 
@@ -265,7 +283,7 @@ def render_plots(df, ticker, S, mode):
 # Main App
 # -------------------------
 def main():
-    st.title("📈 GEX / DEX Pro")
+    st.title("GEX / DEX Pro")
     
     with st.sidebar:
         st.header("Control Panel")
