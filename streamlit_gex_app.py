@@ -138,9 +138,13 @@ def process_exposure(df, S, s_range):
 
         gamma, delta = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        # Dealer short options → negative gamma for both
-        gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq
-        dex = -delta * S * CONTRACT_SIZE * liq
+        # Claude's Logic: Short Calls (Negative) vs Long Puts (Positive)
+        if row["option_type"] == "call":
+            gex = -gamma * S**2 * 0.01 * CONTRACT_SIZE * liq  # Dealer Short Call
+            dex = -delta * S * CONTRACT_SIZE * liq
+        else:
+            gex = gamma * S**2 * 0.01 * CONTRACT_SIZE * liq   # Dealer Long Put
+            dex = -delta * S * CONTRACT_SIZE * liq
 
         res.append({
             "strike": K,
