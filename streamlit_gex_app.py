@@ -116,7 +116,7 @@ def process_exposure(df, S, s_range, model_type):
 
     res = []
     for _, row in df.iterrows():
-        K, T = float(row["strike"]), max(float(row["T")), 0.00001)
+        K, T = float(row["strike"]), max(float(row["T"]), 0.00001)
         oi = row.get("openInterest") or 0
         vol = row.get("volume") or 0
         liq = oi if oi > 0 else vol
