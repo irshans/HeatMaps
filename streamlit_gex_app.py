@@ -212,7 +212,7 @@ def render_plots(df, ticker, S, mode):
         xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
         yaxis=dict(
             title="Strike", 
-            tickfont=dict(size=12), 
+            tickfont=dict(size=12, color="#cccccc"),
             autorange=True,
             tickmode='array', 
             tickvals=y_labs, 
@@ -221,34 +221,36 @@ def render_plots(df, ticker, S, mode):
         margin=dict(l=80, r=120, t=100, b=40)
     )
 
-    # Highlight the closest strike on the y-axis with red background and white text
-    fig_h.update_yaxes(
-        tickfont=dict(color=["white" if s == closest_strike else "#cccccc" for s in y_labs],
-                      size=[14 if s == closest_strike else 12 for s in y_labs]),
-        ticklabelmode="instant"
-    )
+    # === SPOT STRIKE HIGHLIGHT: Red background behind the closest strike label ===
+    if len(y_labs) > 1:
+        strike_step = y_labs[1] - y_labs[0]  # Assume uniform spacing
+        padding = strike_step * 0.4
+    else:
+        padding = 10  # Fallback for single strike
 
-    # Apply red background only to the spot strike label
-    for annotation in fig_h.layout.annotations:
-        if annotation.y == closest_strike:
-            annotation.bgcolor = "rgba(200, 0, 0, 0.8)"
-            annotation.bordercolor = "red"
-            annotation.borderwidth = 1
-            annotation.borderpad = 4
-
-    # Alternative robust method: add a separate shape for background
     fig_h.add_shape(
         type="rect",
         xref="paper", yref="y",
-        x0=0, x1=0.15,  # Covers left margin where y-labels are
-        y0=closest_strike - (y_labs[1] - y_labs[0]) * 0.4 if len(y_labs) > 1 else closest_strike - 5,
-        y1=closest_strike + (y_labs[1] - y_labs[0]) * 0.4 if len(y_labs) > 1 else closest_strike + 5,
-        fillcolor="rgba(200, 0, 0, 0.7)",
+        x0=0, x1=0.18,  # Covers the y-axis label area
+        y0=closest_strike - padding,
+        y1=closest_strike + padding,
+        fillcolor="rgba(220, 20, 20, 0.7)",  # Bold red with transparency
         line=dict(width=0),
         layer="below"
     )
 
-    # Bar chart (unchanged)
+    # Make the spot strike label bold and white for maximum contrast
+    fig_h.add_annotation(
+        xref="paper", yref="y",
+        x=0.16, y=closest_strike,
+        text=f"{closest_strike:,.0f}",
+        showarrow=False,
+        font=dict(color="white", size=14, family="Arial Black"),
+        align="right",
+        bgcolor="rgba(0,0,0,0)"  # Transparent background so shape shows through
+    )
+
+    # Bar chart
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, 
                              marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400,
@@ -262,7 +264,7 @@ def render_plots(df, ticker, S, mode):
 # Main App
 # -------------------------
 def main():
-    st.title("GEX / DEX Pro")
+    st.title("📈 GEX / DEX Pro")
     
     with st.sidebar:
         st.header("Control Panel")
