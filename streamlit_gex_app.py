@@ -313,10 +313,10 @@ def main():
     col6, col7 = st.columns([1, 3])
     # with col6:
     #    st.caption("Controls compacted")
-    with col7:
-        s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
-        if s_range_slider != s_range:
-            s_range = s_range_slider
+    #with col7:
+    #    s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
+    #    if s_range_slider != s_range:
+    #        s_range = s_range_slider
 
     if run:
         with st.spinner(f"Analyzing {ticker}..."):
