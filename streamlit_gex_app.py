@@ -292,9 +292,9 @@ def render_plots(df, ticker, S, mode):
 # Main App (compact controls, no model dropdown)
 # -------------------------
 def main():
-    st.title("📈 GEX / VEX Pro (0DTE Live)")
+    st.title("📈 GEX / VEX Pro")
 
-    st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
+    # st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
 
     # Compact single-line toolbar: tweak column ratios to keep widgets compact
     col1, col2, col3, col4, col5 = st.columns([1.7, 0.9, 0.8, 0.8, 0.8])
@@ -311,8 +311,8 @@ def main():
 
     # Small secondary row for optional slider (if user prefers slider)
     col6, col7 = st.columns([1, 3])
-    with col6:
-        st.caption("Controls compacted")
+    # with col6:
+    #    st.caption("Controls compacted")
     with col7:
         s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
         if s_range_slider != s_range:
