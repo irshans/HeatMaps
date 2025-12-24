@@ -14,11 +14,12 @@ import random
 st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
 
 # Compact UI styling (reduces padding/font-size of common widgets)
+# Increased top padding so the small title isn't cut off
 st.markdown(
     """
     <style>
-    /* Reduce vertical spacing around main container */
-    .block-container { padding-top: 8px; padding-bottom: 8px; }
+    /* Increase top padding so title is visible and not cut off */
+    .block-container { padding-top: 24px; padding-bottom: 8px; }
 
     /* Buttons */
     button[kind="primary"], .stButton>button {
@@ -267,7 +268,7 @@ def render_plots(df, ticker, S, mode):
     fig_h = go.Figure(data=go.Heatmap(
         z=z_raw, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
         colorscale=colorscale, zmin=zmin, zmax=zmax, zmid=0, showscale=True,
-        colorbar=dict(title=f"{mode} ($)", titleside="right", tickformat=",.0s")
+        colorbar=dict(title=dict(text=f"{mode} ($)"), tickformat=",.0s")
     ))
 
     # Cell annotations (show only above threshold)
@@ -314,9 +315,9 @@ def render_plots(df, ticker, S, mode):
 # Main App (compact controls, no model dropdown, no captions, no slider)
 # -------------------------
 def main():
-    # Small centered title
+    # Small centered title moved down slightly (margin-top) so it's not cut off
     st.markdown(
-        "<div style='text-align:center;'><h2 style='font-size:18px; margin:6px 0; font-weight:600;'>📈 GEX / VEX Pro</h2></div>",
+        "<div style='text-align:center; margin-top:6px;'><h2 style='font-size:18px; margin:10px 0 6px 0; font-weight:600;'>📈 GEX / VEX Pro</h2></div>",
         unsafe_allow_html=True,
     )
 
