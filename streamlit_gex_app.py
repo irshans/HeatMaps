@@ -13,6 +13,45 @@ import random
 # --- APP CONFIG ---
 st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
 
+# Compact UI styling (reduces padding/font-size of common widgets)
+st.markdown(
+    """
+    <style>
+    /* Reduce vertical spacing around main container */
+    .block-container { padding-top: 8px; padding-bottom: 8px; }
+
+    /* Buttons */
+    button[kind="primary"], .stButton>button {
+        padding:4px 8px !important;
+        font-size:12px !important;
+        height:30px !important;
+    }
+
+    /* Inputs, selects, number inputs */
+    input[type="text"], input[type="number"], select {
+        padding:6px 8px !important;
+        font-size:12px !important;
+        height:28px !important;
+    }
+
+    /* Radio, selectbox height & font */
+    div[role="radiogroup"] label, .stSelectbox, .stRadio {
+        font-size:12px !important;
+    }
+
+    /* Sliders compact */
+    .stSlider > div, .stNumberInput > div {
+        font-size:12px !important;
+        height:34px !important;
+    }
+
+    /* Reduce margins for columns */
+    .css-1lcbmhc.e1tzin5v0 { gap: 6px; } /* fallback: small column gap */
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 CONTRACT_SIZE = 100
 FALLBACK_IV = 0.30
 RISK_FREE_RATE = 0.042
@@ -28,7 +67,6 @@ def get_actual_trading_day(date_str):
         '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
         '2026-01-01'
     }
-    # Move backwards until weekday and not a holiday
     while dt.weekday() > 4 or dt.strftime('%Y-%m-%d') in holidays:
         dt = dt - timedelta(days=1)
     return dt.strftime('%Y-%m-%d')
@@ -37,20 +75,12 @@ def get_actual_trading_day(date_str):
 # Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
-    """
-    Return (gamma, delta, vega).
-    - vega returned is the standard BS vega (dPrice / dVol) per 1.0 vol unit.
-    For VEX we will multiply by 0.01 to represent $ per 1% IV change.
-    """
-    MIN_T_YEARS = 60 / SECONDS_IN_YEAR  # floor to 60 seconds (1 minute)
+    MIN_T_YEARS = 60 / SECONDS_IN_YEAR
     T_eff = max(T, MIN_T_YEARS)
-    sig_eff = max(sigma, 0.01)  # floor IV at 1% to avoid extreme gamma / divide by zero
-
+    sig_eff = max(sigma, 0.01)
     d1 = (math.log(S / K) + (r + 0.5 * sig_eff**2) * T_eff) / (sig_eff * math.sqrt(T_eff))
-    # gamma same for call/put in BS
     gamma = norm.pdf(d1) / (S * sig_eff * math.sqrt(T_eff))
     delta = norm.cdf(d1) if option_type == "call" else norm.cdf(d1) - 1
-    # vega per 1.0 volatility (i.e., per 100 vol points); we'll scale to per 1% where needed
     vega = S * norm.pdf(d1) * math.sqrt(T_eff)
     return gamma, delta, vega
 
@@ -112,16 +142,13 @@ def process_exposure(df, S, s_range, model_type):
         return pd.DataFrame()
 
     df = df.copy()
-    # Use US/Eastern for 0DTE and expiry logic
     eastern = ZoneInfo("US/Eastern")
     now_eastern = datetime.now(tz=eastern)
     today = now_eastern.date()
 
-    # Normalize expiration to date string already provided; create date objects
     df["exp_dt_obj"] = pd.to_datetime(df["expiration"]).dt.date
     df["exp_date_only"] = df["exp_dt_obj"]
 
-    # Filter by strike range and expirations today or later
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["exp_date_only"] >= today)]
 
     res = []
@@ -131,15 +158,13 @@ def process_exposure(df, S, s_range, model_type):
         except Exception:
             continue
 
-        # build expiration datetime at 16:00 US/Eastern
         exp_date = pd.to_datetime(row["expiration"]).date()
         exp_close = datetime(exp_date.year, exp_date.month, exp_date.day, 16, 0, tzinfo=eastern)
         seconds_left = (exp_close - now_eastern).total_seconds()
-
         if seconds_left <= 0:
             continue
 
-        MIN_SECONDS = 60  # floor to 60 seconds
+        MIN_SECONDS = 60
         seconds_for_T = max(seconds_left, MIN_SECONDS)
         T = seconds_for_T / SECONDS_IN_YEAR
 
@@ -157,18 +182,12 @@ def process_exposure(df, S, s_range, model_type):
 
         gamma, delta, vega = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        # Dealer position multiplier
         if model_type == "Dealer Short All (Absolute Stress)":
             dealer_pos = -1
         else:
-            # Short Calls / Long Puts
             dealer_pos = -1 if row["option_type"] == "call" else +1
 
-        # GEX: dealer gamma exposure (dollars) for a 1% spot move (0.01)
         gex = dealer_pos * gamma * (S ** 2) * 0.01 * CONTRACT_SIZE * liq
-
-        # VEX: dealer vega exposure in dollars for a 1% IV move (vega per 1.0 * 0.01)
-        # vega returned by get_greeks is per 1.0 vol; multiply by 0.01 to get per 1% move
         vex = dealer_pos * vega * 0.01 * CONTRACT_SIZE * liq
 
         res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "vex": vex})
@@ -184,28 +203,20 @@ def render_plots(df, ticker, S, mode):
     if df.empty:
         return None, None
 
-    val_col = mode.lower()  # 'gex' or 'vex'
+    val_col = mode.lower()
     agg = df.groupby('strike')[val_col].sum().sort_index()
-    pivot = df.pivot_table(
-        index='strike',
-        columns='expiry',
-        values=val_col,
-        aggfunc='sum',
-        fill_value=0
-    ).sort_index(ascending=False)
+    pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
 
     z_raw = pivot.values
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** 0.5)
 
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
-
     if not y_labs:
         return None, None
 
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
-    # Build hover text using raw values
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
@@ -213,14 +224,12 @@ def render_plots(df, ticker, S, mode):
             val = z_raw[i, j]
             prefix = "-" if val < 0 else ""
             v_abs = abs(val)
-            # Units remain in dollars; thresholds chosen to display nicely
             if v_abs >= 1e6:
                 formatted = f"{prefix}${v_abs/1e6:,.2f}M"
             elif v_abs >= 1e3:
                 formatted = f"{prefix}${v_abs/1e3:,.1f}K"
             else:
                 formatted = f"{prefix}${v_abs:,.0f}"
-            # If VEX, clarify it's per 1% IV move
             note = " (per 1% IV)" if mode == "VEX" else ""
             row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}{note}")
         h_text.append(row)
@@ -233,12 +242,8 @@ def render_plots(df, ticker, S, mode):
     z_min = z_scaled.min() if z_scaled.size else 0
     z_max = z_scaled.max() if z_scaled.size else 0
 
-    fig_h = go.Figure(data=go.Heatmap(
-        z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
-        colorscale=colorscale, zmid=0, showscale=True
-    ))
+    fig_h = go.Figure(data=go.Heatmap(z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text", colorscale=colorscale, zmid=0, showscale=True))
 
-    # Cell annotations
     max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
@@ -257,79 +262,53 @@ def render_plots(df, ticker, S, mode):
                 z_norm = 0.5
             text_color = "black" if z_norm > 0.55 else "white"
 
-            fig_h.add_annotation(
-                x=exp, y=strike, text=txt, showarrow=False,
-                font=dict(color=text_color, size=12, family="Arial"),
-                xref="x", yref="y"
-            )
+            fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False, font=dict(color=text_color, size=12, family="Arial"), xref="x", yref="y")
 
-    # Highlight background for spot strike
     sorted_strikes = sorted(y_labs)
     strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
     padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
 
-    fig_h.add_shape(
-        type="rect", xref="paper", yref="y",
-        x0=-0.08, x1=1.0,
-        y0=closest_strike - padding, y1=closest_strike + padding,
-        fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below"
-    )
+    fig_h.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, y0=closest_strike - padding, y1=closest_strike + padding, fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
 
-    fig_h.update_layout(
-        title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f}",
-        template="plotly_dark", height=900,
-        xaxis=dict(type='category', side='top', tickfont=dict(size=12)),
-        yaxis=dict(
-            title="Strike", tickfont=dict(size=12),
-            autorange=True, tickmode='array', tickvals=y_labs,
-            ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]
-        ),
-        margin=dict(l=80, r=40, t=100, b=40)
-    )
+    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f}", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=40, t=100, b=40))
 
-    # Bar chart: net exposure by strike
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values,
-                             marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
-    fig_b.update_layout(
-        title=f"Net {mode} by Strike", template="plotly_dark", height=400,
-        xaxis=dict(title="Strike", tickformat=",d"),
-        yaxis=dict(title="Exposure ($)", tickformat="$,.2s")
-    )
-
-    fig_b.add_annotation(
-        x=closest_strike, y=0, text="▲ Spot", showarrow=False,
-        font=dict(color="yellow", size=12), yref="paper", yshift=-20
-    )
+    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
+    fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400, xaxis=dict(title="Strike", tickformat=",d"), yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
+    fig_b.add_annotation(x=closest_strike, y=0, text="▲ Spot", showarrow=False, font=dict(color="yellow", size=12), yref="paper", yshift=-20)
 
     return fig_h, fig_b
 
 # -------------------------
-# Main App (controls at top)
+# Main App (compact controls)
 # -------------------------
 def main():
     st.title("📈 GEX / VEX Pro (0DTE Live)")
 
-    # Top controls container
-    with st.container():
-        # First row: ticker, metric, model, run button
-        col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 1, 1])
-        with col1:
-            ticker = st.text_input("Ticker", "SPY").upper().strip()
-        with col2:
-            mode = st.radio("Metric", ["GEX", "VEX"], horizontal=True)
-        with col3:
-            model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"])
-        with col4:
-            max_exp = st.number_input("Max Expirations", min_value=1, max_value=15, value=6, step=1)
-        with col5:
-            run = st.button("Calculate Exposure", type="primary")
+    # Compact single-line toolbar: tweak column ratios to keep widgets compact
+    col1, col2, col3, col4, col5, col6 = st.columns([1.7, 0.9, 1.3, 0.8, 0.8, 0.8])
+    with col1:
+        ticker = st.text_input("Ticker", "SPY", key="ticker_compact").upper().strip()
+    with col2:
+        mode = st.radio("Metric", ["GEX", "VEX"], horizontal=True, key="mode_compact")
+    with col3:
+        model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"], key="model_compact")
+    with col4:
+        max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=6, step=1, key="maxexp_compact")
+    with col5:
+        s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=30, step=1, key="srange_compact")
+    with col6:
+        run = st.button("Run", type="primary", key="run_compact")
 
-        # Second row: strike range slider
-        col6, col7 = st.columns([3, 1])
-        with col6:
-            s_range = st.slider("Strike Range ± Spot", 5, 200, 30, step=1)
-        with col7:
-            st.write("")
+    # Small secondary row for optional slider (if user prefers slider)
+    col7, col8 = st.columns([1, 3])
+    with col7:
+        st.caption("Controls compacted")
+    with col8:
+        # optional: a narrower slider for visual adjustment (keeps UI compact)
+        s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
+        # sync number_input and slider
+        if s_range_slider != s_range:
+            s_range = s_range_slider
 
     if run:
         with st.spinner(f"Analyzing {ticker}..."):
