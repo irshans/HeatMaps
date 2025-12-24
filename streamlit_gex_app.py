@@ -75,6 +75,10 @@ def get_actual_trading_day(date_str):
 # Black-Scholes Math
 # -------------------------
 def get_greeks(S, K, r, sigma, T, option_type):
+    """
+    Return (gamma, delta, vega).
+    - vega returned is the standard BS vega (dPrice / dVol) per 1.0 vol unit.
+    """
     MIN_T_YEARS = 60 / SECONDS_IN_YEAR
     T_eff = max(T, MIN_T_YEARS)
     sig_eff = max(sigma, 0.01)
@@ -137,7 +141,12 @@ def fetch_data_safe(ticker, max_exp):
 # -------------------------
 # GEX & VEX Processing
 # -------------------------
-def process_exposure(df, S, s_range, model_type):
+def process_exposure(df, S, s_range):
+    """
+    Computes exposures assuming the dealer model is:
+      Short Calls / Long Puts (fixed).
+    Dealer is short calls (dealer_pos = -1) and long puts (dealer_pos = +1).
+    """
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -182,12 +191,12 @@ def process_exposure(df, S, s_range, model_type):
 
         gamma, delta, vega = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
 
-        if model_type == "Dealer Short All (Absolute Stress)":
-            dealer_pos = -1
-        else:
-            dealer_pos = -1 if row["option_type"] == "call" else +1
+        # Fixed dealer model: Short Calls / Long Puts
+        dealer_pos = -1 if row["option_type"] == "call" else +1
 
+        # GEX: dollars per 1% spot move
         gex = dealer_pos * gamma * (S ** 2) * 0.01 * CONTRACT_SIZE * liq
+        # VEX: dollars per 1% IV move (vega per 1.0 * 0.01)
         vex = dealer_pos * vega * 0.01 * CONTRACT_SIZE * liq
 
         res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "vex": vex})
@@ -270,8 +279,9 @@ def render_plots(df, ticker, S, mode):
 
     fig_h.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, y0=closest_strike - padding, y1=closest_strike + padding, fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
 
-    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f}", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=40, t=100, b=40))
+    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f} — Dealer: Short Calls / Long Puts", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=40, t=100, b=40))
 
+    agg = df.groupby('strike')[val_col].sum().sort_index()
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400, xaxis=dict(title="Strike", tickformat=",d"), yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
     fig_b.add_annotation(x=closest_strike, y=0, text="▲ Spot", showarrow=False, font=dict(color="yellow", size=12), yref="paper", yshift=-20)
@@ -279,34 +289,32 @@ def render_plots(df, ticker, S, mode):
     return fig_h, fig_b
 
 # -------------------------
-# Main App (compact controls)
+# Main App (compact controls, no model dropdown)
 # -------------------------
 def main():
     st.title("📈 GEX / VEX Pro (0DTE Live)")
 
+    st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
+
     # Compact single-line toolbar: tweak column ratios to keep widgets compact
-    col1, col2, col3, col4, col5, col6 = st.columns([1.7, 0.9, 1.3, 0.8, 0.8, 0.8])
+    col1, col2, col3, col4, col5 = st.columns([1.7, 0.9, 0.8, 0.8, 0.8])
     with col1:
         ticker = st.text_input("Ticker", "SPY", key="ticker_compact").upper().strip()
     with col2:
         mode = st.radio("Metric", ["GEX", "VEX"], horizontal=True, key="mode_compact")
     with col3:
-        model_type = st.selectbox("Dealer Model", ["Dealer Short All (Absolute Stress)", "Short Calls / Long Puts"], key="model_compact")
-    with col4:
         max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=6, step=1, key="maxexp_compact")
-    with col5:
+    with col4:
         s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=30, step=1, key="srange_compact")
-    with col6:
+    with col5:
         run = st.button("Run", type="primary", key="run_compact")
 
     # Small secondary row for optional slider (if user prefers slider)
-    col7, col8 = st.columns([1, 3])
-    with col7:
+    col6, col7 = st.columns([1, 3])
+    with col6:
         st.caption("Controls compacted")
-    with col8:
-        # optional: a narrower slider for visual adjustment (keeps UI compact)
+    with col7:
         s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
-        # sync number_input and slider
         if s_range_slider != s_range:
             s_range = s_range_slider
 
@@ -315,7 +323,7 @@ def main():
             S, raw_df = fetch_data_safe(ticker, int(max_exp))
 
         if S and raw_df is not None and not raw_df.empty:
-            processed = process_exposure(raw_df, S, s_range, model_type)
+            processed = process_exposure(raw_df, S, s_range)
 
             if not processed.empty:
                 t_gex = processed["gex"].sum() / 1e9
