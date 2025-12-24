@@ -253,17 +253,14 @@ def render_plots(df, ticker, S, mode):
     zmax = max_abs
 
     # Custom colorscale with a narrow neutral band around center (0).
-    # Colors chosen to resemble the palette in your images:
-    # deep purple/dark blue -> neutral blue -> teal/green -> yellow
-    # The fractions 0.49/0.50/0.51 compress neutrality to a thin band.
     colorscale = [
-        [0.0, '#1b0144'],   # extreme negative (deep purple)
-        [0.45, '#203a6a'],  # negative-mid (dark blue)
-        [0.49, '#274b73'],  # near-zero negative
-        [0.50, '#2b5c8a'],  # zero (neutral blue)
-        [0.51, '#2aa198'],  # near-zero positive (teal)
-        [0.55, '#6bbf3a'],  # positive-mid (green)
-        [1.0, '#ffd700']    # extreme positive (yellow)
+        [0.0, '#1b0144'],
+        [0.45, '#203a6a'],
+        [0.49, '#274b73'],
+        [0.50, '#2b5c8a'],
+        [0.51, '#2aa198'],
+        [0.55, '#6bbf3a'],
+        [1.0, '#ffd700']
     ]
 
     # Heatmap using raw z values so color stops map to actual dollar exposures
@@ -306,7 +303,7 @@ def render_plots(df, ticker, S, mode):
 
     fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f} — Dealer: Short Calls / Long Puts", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=60, t=100, b=40))
 
-    # Bar chart: net exposure by strike (uses agg computed above)
+    # Bar chart: net exposure by strike
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400, xaxis=dict(title="Strike", tickformat=",d"), yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
     fig_b.add_annotation(x=closest_strike, y=0, text="▲ Spot", showarrow=False, font=dict(color="yellow", size=12), yref="paper", yshift=-20)
@@ -314,12 +311,14 @@ def render_plots(df, ticker, S, mode):
     return fig_h, fig_b
 
 # -------------------------
-# Main App (compact controls, no model dropdown)
+# Main App (compact controls, no model dropdown, no captions, no slider)
 # -------------------------
 def main():
-    st.title("📈 GEX / VEX Pro (0DTE Live)")
-
-    st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
+    # Small centered title
+    st.markdown(
+        "<div style='text-align:center;'><h2 style='font-size:18px; margin:6px 0; font-weight:600;'>📈 GEX / VEX Pro</h2></div>",
+        unsafe_allow_html=True,
+    )
 
     # Compact single-line toolbar: tweak column ratios to keep widgets compact
     col1, col2, col3, col4, col5 = st.columns([1.7, 0.9, 0.8, 0.8, 0.8])
@@ -333,15 +332,6 @@ def main():
         s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=30, step=1, key="srange_compact")
     with col5:
         run = st.button("Run", type="primary", key="run_compact")
-
-    # Small secondary row for optional slider (if user prefers slider)
-    col6, col7 = st.columns([1, 3])
-    with col6:
-        st.caption("Controls compacted")
-    with col7:
-        s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
-        if s_range_slider != s_range:
-            s_range = s_range_slider
 
     if run:
         with st.spinner(f"Analyzing {ticker}..."):
