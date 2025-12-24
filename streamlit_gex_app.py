@@ -206,7 +206,7 @@ def process_exposure(df, S, s_range):
     return pd.DataFrame(res)
 
 # -------------------------
-# Visualizations
+# Visualizations (colors tightened around neutral)
 # -------------------------
 def render_plots(df, ticker, S, mode):
     if df.empty:
@@ -217,6 +217,7 @@ def render_plots(df, ticker, S, mode):
     pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
 
     z_raw = pivot.values
+    # keep scaled for annotation sizing / visual readability but color mapping uses raw symmetric range
     z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** 0.5)
 
     x_labs = pivot.columns.tolist()
@@ -226,6 +227,7 @@ def render_plots(df, ticker, S, mode):
 
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
+    # Build hover text using raw values
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
@@ -243,21 +245,40 @@ def render_plots(df, ticker, S, mode):
             row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}{note}")
         h_text.append(row)
 
+    # Symmetric range so zero maps to center exactly
+    max_abs = np.max(np.abs(z_raw)) if z_raw.size else 1.0
+    if max_abs == 0:
+        max_abs = 1.0
+    zmin = -max_abs
+    zmax = max_abs
+
+    # Custom colorscale with a narrow neutral band around center (0).
+    # Colors chosen to resemble the palette in your images:
+    # deep purple/dark blue -> neutral blue -> teal/green -> yellow
+    # The fractions 0.49/0.50/0.51 compress neutrality to a thin band.
     colorscale = [
-        [0.0, '#2d0052'], [0.2, '#1a1f4d'], [0.35, '#1e3a5f'], [0.5, '#1f4d4d'],
-        [0.65, '#2d5a3d'], [0.8, '#6b7c1f'], [0.9, '#d4a017'], [1.0, '#ffd700']
+        [0.0, '#1b0144'],   # extreme negative (deep purple)
+        [0.45, '#203a6a'],  # negative-mid (dark blue)
+        [0.49, '#274b73'],  # near-zero negative
+        [0.50, '#2b5c8a'],  # zero (neutral blue)
+        [0.51, '#2aa198'],  # near-zero positive (teal)
+        [0.55, '#6bbf3a'],  # positive-mid (green)
+        [1.0, '#ffd700']    # extreme positive (yellow)
     ]
 
-    z_min = z_scaled.min() if z_scaled.size else 0
-    z_max = z_scaled.max() if z_scaled.size else 0
+    # Heatmap using raw z values so color stops map to actual dollar exposures
+    fig_h = go.Figure(data=go.Heatmap(
+        z=z_raw, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
+        colorscale=colorscale, zmin=zmin, zmax=zmax, zmid=0, showscale=True,
+        colorbar=dict(title=f"{mode} ($)", titleside="right", tickformat=",.0s")
+    ))
 
-    fig_h = go.Figure(data=go.Heatmap(z=z_scaled, x=x_labs, y=y_labs, text=h_text, hoverinfo="text", colorscale=colorscale, zmid=0, showscale=True))
-
+    # Cell annotations (show only above threshold)
     max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < 500:
+            if abs(val) < 500:  # threshold for showing annotation
                 continue
             prefix = "-" if val < 0 else ""
             txt = f"{prefix}${abs(val)/1e3:,.0f}K"
@@ -265,23 +286,27 @@ def render_plots(df, ticker, S, mode):
                 txt += " ⭐"
 
             cell_val = z_scaled[i, j]
-            if z_max != z_min:
-                z_norm = (cell_val - z_min) / (z_max - z_min)
+            # use scaled z for normalization of text color selection
+            zmin_s = z_scaled.min() if z_scaled.size else -1
+            zmax_s = z_scaled.max() if z_scaled.size else 1
+            if zmax_s != zmin_s:
+                z_norm = (cell_val - zmin_s) / (zmax_s - zmin_s)
             else:
                 z_norm = 0.5
             text_color = "black" if z_norm > 0.55 else "white"
 
             fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False, font=dict(color=text_color, size=12, family="Arial"), xref="x", yref="y")
 
+    # Highlight background for spot strike
     sorted_strikes = sorted(y_labs)
     strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
     padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
 
     fig_h.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, y0=closest_strike - padding, y1=closest_strike + padding, fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
 
-    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f} — Dealer: Short Calls / Long Puts", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=40, t=100, b=40))
+    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f} — Dealer: Short Calls / Long Puts", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=60, t=100, b=40))
 
-    agg = df.groupby('strike')[val_col].sum().sort_index()
+    # Bar chart: net exposure by strike (uses agg computed above)
     fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
     fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400, xaxis=dict(title="Strike", tickformat=",d"), yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
     fig_b.add_annotation(x=closest_strike, y=0, text="▲ Spot", showarrow=False, font=dict(color="yellow", size=12), yref="paper", yshift=-20)
@@ -292,9 +317,9 @@ def render_plots(df, ticker, S, mode):
 # Main App (compact controls, no model dropdown)
 # -------------------------
 def main():
-    st.title("📈 GEX / VEX Pro")
+    st.title("📈 GEX / VEX Pro (0DTE Live)")
 
-    # st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
+    st.caption("Dealer model: Short Calls / Long Puts (fixed) — dropdown removed")
 
     # Compact single-line toolbar: tweak column ratios to keep widgets compact
     col1, col2, col3, col4, col5 = st.columns([1.7, 0.9, 0.8, 0.8, 0.8])
@@ -311,12 +336,12 @@ def main():
 
     # Small secondary row for optional slider (if user prefers slider)
     col6, col7 = st.columns([1, 3])
-    # with col6:
-    #    st.caption("Controls compacted")
-    #with col7:
-    #    s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
-    #    if s_range_slider != s_range:
-    #        s_range = s_range_slider
+    with col6:
+        st.caption("Controls compacted")
+    with col7:
+        s_range_slider = st.slider("", 5, 200, int(s_range), step=1, key="srange_slider_compact")
+        if s_range_slider != s_range:
+            s_range = s_range_slider
 
     if run:
         with st.spinner(f"Analyzing {ticker}..."):
