@@ -261,7 +261,7 @@ def render_plots(df, ticker, S, mode):
         [0.50, '#2b5c8a'],
         [0.51, '#2aa198'],
         [0.55, '#6bbf3a'],
-        [1.0, '#ffd700']
+        [0.9, '#ffd700']
     ]
 
     # Heatmap using raw z values so color stops map to actual dollar exposures
