@@ -255,15 +255,17 @@ def render_plots(df, ticker, S, mode):
 
     # Custom colorscale with a narrow neutral band around center (0).
     colorscale = [
-        [0.0, '#1b0144'],
-        [0.45, "#38307e"],
-        [0.49, "#4b2ca1"],
+        [0.00, '#050018'],   # deepest purple
+        [0.08, '#20003e'],
+        [0.20, '#3d0b58'],
+        [0.36, '#5a1f71'],
+        [0.48, '#274b73'],   # approach center
         [0.50, '#2b5c8a'],
-        [0.51, '#2aa198'],
-        [0.55, '#6bbf3a'],
-        [0.9, '#ffd700']
+        [0.52, '#2aa198'],
+        [0.65, '#a8d42a'],
+        [0.80, '#ffcf3f'],
+        [1.00, "#faef1a"],   # almost white-yellow
     ]
-
     # Heatmap using raw z values so color stops map to actual dollar exposures
     fig_h = go.Figure(data=go.Heatmap(
         z=z_raw, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
