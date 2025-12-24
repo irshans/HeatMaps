@@ -256,12 +256,12 @@ def render_plots(df, ticker, S, mode):
     # Custom colorscale with a narrow neutral band around center (0).
     colorscale = [
         [0.0, '#1b0144'],
-        [0.2, '#203a6a'],
-        [0.3, '#274b73'],
-        [0.40, '#2b5c8a'],
-        [0.51, '#2aa198'],
-        [0.65, '#6bbf3a'],
-        [0.8, '#ffd700']
+        [0.4, '#203a6a'],
+        [0.5, '#274b73'],
+        [0.60, '#2b5c8a'],
+        [0.71, '#2aa198'],
+        [0.85, '#6bbf3a'],
+        [0.9, '#ffd700']
     ]
 
     # Heatmap using raw z values so color stops map to actual dollar exposures
