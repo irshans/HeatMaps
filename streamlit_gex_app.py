@@ -255,7 +255,7 @@ def render_plots(df, ticker, S, mode):
 
     # Custom colorscale with a narrow neutral band around center (0).
     colorscale = [
-        [0.00, '#050018'],  # deepest purple (extreme negative)
+        [0.00, "#221557"],  # deepest purple (extreme negative)
         [0.10, '#260446'],
         [0.25, '#56117a'],
         [0.40, '#6E298A'],
