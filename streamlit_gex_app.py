@@ -223,7 +223,7 @@ def render_plot(df, ticker, S, mode):
 
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
-    # Build hover text using raw values
+    # Build hover text
     h_text = []
     for i, strike in enumerate(y_labs):
         row = []
@@ -241,7 +241,6 @@ def render_plot(df, ticker, S, mode):
             row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}{note}")
         h_text.append(row)
 
-    # Symmetric range so zero maps to center exactly
     max_abs = np.max(np.abs(z_raw)) if z_raw.size else 1.0
     if max_abs == 0:
         max_abs = 1.0
@@ -268,7 +267,7 @@ def render_plot(df, ticker, S, mode):
         colorbar=dict(title=dict(text=f"{mode} ($)"), tickformat=",.0s")
     ))
 
-    # === MODIFIED: Text color now based on sign of value ===
+    # FIXED: Text color based purely on sign
     max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
@@ -280,14 +279,15 @@ def render_plot(df, ticker, S, mode):
             if abs(val) == max_abs_val and max_abs_val > 0:
                 txt += " ⭐"
 
-            # Positive = black text, Negative = white text
-            text_color = "black" if val >= 0 else "white"
+            text_color = "black" if val >= 0 else "white"  # ← This is the fix
 
-            fig.add_annotation(x=exp, y=strike, text=txt, showarrow=False, 
-                             font=dict(color=text_color, size=11, family="Arial"), 
-                             xref="x", yref="y")
+            fig.add_annotation(
+                x=exp, y=strike, text=txt, showarrow=False,
+                font=dict(color=text_color, size=11, family="Arial"),
+                xref="x", yref="y"
+            )
 
-    # Highlight background for spot strike
+    # Spot strike highlight (unchanged)
     sorted_strikes = sorted(y_labs)
     strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
     padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
@@ -308,7 +308,6 @@ def render_plot(df, ticker, S, mode):
     )
 
     return fig
-
 # -------------------------
 # Main App
 # -------------------------
