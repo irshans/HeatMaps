@@ -323,12 +323,13 @@ def main():
     col1, col2, col3, col4 = st.columns([1.5, 0.8, 0.8, 0.6])
     with col1:
         ticker = st.text_input("Ticker", "SPY", key="ticker_compact").upper().strip()
+    
+    # Set defaults based on ticker
+    is_spx = ticker in ["SPX", "^SPX", "SPXW", "^SPXW"]
+    default_exp = 5
+    default_range = 80 if is_spx else 25
+    
     with col2:
-        # Set defaults based on ticker
-        is_spx = ticker in ["SPX", "^SPX", "SPXW", "^SPXW"]
-        default_exp = 5
-        default_range = 80 if is_spx else 25
-        
         max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=default_exp, step=1, key="maxexp_compact")
     with col3:
         s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=default_range, step=5, key="srange_compact")
@@ -359,14 +360,20 @@ def main():
                 col_gex, col_vex = st.columns(2)
                 
                 with col_gex:
+                    st.markdown("### GEX Exposure")
                     gex_fig = render_plot(processed, ticker, S, "GEX")
                     if gex_fig:
                         st.plotly_chart(gex_fig, width="stretch")
+                    else:
+                        st.warning("No GEX data to display")
                 
                 with col_vex:
+                    st.markdown("### VEX Exposure")
                     vex_fig = render_plot(processed, ticker, S, "VEX")
                     if vex_fig:
                         st.plotly_chart(vex_fig, width="stretch")
+                    else:
+                        st.warning("No VEX data to display")
                         
             else:
                 st.warning("No data found in range. Check if market is open or broaden strike range.")
