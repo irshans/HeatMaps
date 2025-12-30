@@ -248,7 +248,6 @@ def render_plot(df, ticker, S, mode):
     zmin = -max_abs
     zmax = max_abs
 
-    # Custom colorscale with a narrow neutral band around center (0).
     colorscale = [
         [0.00, "#221557"],
         [0.10, '#260446'],
@@ -269,7 +268,7 @@ def render_plot(df, ticker, S, mode):
         colorbar=dict(title=dict(text=f"{mode} ($)"), tickformat=",.0s")
     ))
 
-    # Cell annotations
+    # === MODIFIED: Text color now based on sign of value ===
     max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
@@ -281,8 +280,8 @@ def render_plot(df, ticker, S, mode):
             if abs(val) == max_abs_val and max_abs_val > 0:
                 txt += " ⭐"
 
-            z_norm = (val - zmin) / (zmax - zmin) if zmax != zmin else 0.5
-            text_color = "black" if z_norm > 0.55 else "white"
+            # Positive = black text, Negative = white text
+            text_color = "black" if val >= 0 else "white"
 
             fig.add_annotation(x=exp, y=strike, text=txt, showarrow=False, 
                              font=dict(color=text_color, size=11, family="Arial"), 
