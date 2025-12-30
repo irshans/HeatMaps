@@ -13,8 +13,7 @@ import random
 # --- APP CONFIG ---
 st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
 
-# Compact UI styling (reduces padding/font-size of common widgets)
-# Increased top padding so the small title isn't cut off
+# Compact UI styling
 st.markdown(
     """
     <style>
@@ -47,7 +46,7 @@ st.markdown(
     }
 
     /* Reduce margins for columns */
-    .css-1lcbmhc.e1tzin5v0 { gap: 6px; } /* fallback: small column gap */
+    .css-1lcbmhc.e1tzin5v0 { gap: 6px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -207,24 +206,20 @@ def process_exposure(df, S, s_range):
     return pd.DataFrame(res)
 
 # -------------------------
-# Visualizations (colors tightened around neutral)
+# Visualizations
 # -------------------------
-def render_plots(df, ticker, S, mode):
+def render_plot(df, ticker, S, mode):
     if df.empty:
-        return None, None
+        return None
 
     val_col = mode.lower()
-    agg = df.groupby('strike')[val_col].sum().sort_index()
     pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
 
     z_raw = pivot.values
-    # keep scaled for annotation sizing / visual readability but color mapping uses raw symmetric range
-    z_scaled = np.sign(z_raw) * (np.abs(z_raw) ** 0.5)
-
     x_labs = pivot.columns.tolist()
     y_labs = pivot.index.tolist()
     if not y_labs:
-        return None, None
+        return None
 
     closest_strike = min(y_labs, key=lambda x: abs(x - S))
 
@@ -255,86 +250,89 @@ def render_plots(df, ticker, S, mode):
 
     # Custom colorscale with a narrow neutral band around center (0).
     colorscale = [
-        [0.00, "#221557"],  # deepest purple (extreme negative)
+        [0.00, "#221557"],
         [0.10, '#260446'],
         [0.25, '#56117a'],
         [0.40, '#6E298A'],
-        [0.49, '#783F8F'],  # last purple before center
-        [0.50, '#224B8B'],  # explicit center (neutral blue) — separates neg/pos
-        [0.52, '#32A7A7'],  # light teal (small positive)
-        [0.65, '#39B481'],  # greenish
-        [0.80, '#A8D42A'],  # yellow-green
+        [0.49, '#783F8F'],
+        [0.50, '#224B8B'],
+        [0.52, '#32A7A7'],
+        [0.65, '#39B481'],
+        [0.80, '#A8D42A'],
         [0.92, '#FFDF4A'],
-        [1.00, '#F1F50C']   # bright yellow (extreme positive)
+        [1.00, '#F1F50C']
     ]
-    # Heatmap using raw z values so color stops map to actual dollar exposures
-    fig_h = go.Figure(data=go.Heatmap(
+    
+    fig = go.Figure(data=go.Heatmap(
         z=z_raw, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
         colorscale=colorscale, zmin=zmin, zmax=zmax, zmid=0, showscale=True,
         colorbar=dict(title=dict(text=f"{mode} ($)"), tickformat=",.0s")
     ))
 
-    # Cell annotations (show only above threshold)
+    # Cell annotations
     max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
     for i, strike in enumerate(y_labs):
         for j, exp in enumerate(x_labs):
             val = z_raw[i, j]
-            if abs(val) < 500:  # threshold for showing annotation
+            if abs(val) < 500:
                 continue
             prefix = "-" if val < 0 else ""
             txt = f"{prefix}${abs(val)/1e3:,.0f}K"
             if abs(val) == max_abs_val and max_abs_val > 0:
                 txt += " ⭐"
 
-            cell_val = z_scaled[i, j]
-            # use scaled z for normalization of text color selection
-            zmin_s = z_scaled.min() if z_scaled.size else -1
-            zmax_s = z_scaled.max() if z_scaled.size else 1
-            if zmax_s != zmin_s:
-                z_norm = (cell_val - zmin_s) / (zmax_s - zmin_s)
-            else:
-                z_norm = 0.5
+            z_norm = (val - zmin) / (zmax - zmin) if zmax != zmin else 0.5
             text_color = "black" if z_norm > 0.55 else "white"
 
-            fig_h.add_annotation(x=exp, y=strike, text=txt, showarrow=False, font=dict(color=text_color, size=12, family="Arial"), xref="x", yref="y")
+            fig.add_annotation(x=exp, y=strike, text=txt, showarrow=False, 
+                             font=dict(color=text_color, size=11, family="Arial"), 
+                             xref="x", yref="y")
 
     # Highlight background for spot strike
     sorted_strikes = sorted(y_labs)
     strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
     padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
 
-    fig_h.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, y0=closest_strike - padding, y1=closest_strike + padding, fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
+    fig.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, 
+                  y0=closest_strike - padding, y1=closest_strike + padding, 
+                  fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
 
-    fig_h.update_layout(title=f"{ticker} {mode} Exposure Map | Spot: ${S:,.2f} — Dealer: Short Calls / Long Puts", template="plotly_dark", height=900, xaxis=dict(type='category', side='top', tickfont=dict(size=12)), yaxis=dict(title="Strike", tickfont=dict(size=12), autorange=True, tickmode='array', tickvals=y_labs, ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), margin=dict(l=80, r=60, t=100, b=40))
+    fig.update_layout(
+        title=f"{ticker} {mode} | Spot: ${S:,.2f}",
+        template="plotly_dark", 
+        height=700, 
+        xaxis=dict(type='category', side='top', tickfont=dict(size=11)), 
+        yaxis=dict(title="Strike", tickfont=dict(size=11), autorange=True, 
+                   tickmode='array', tickvals=y_labs, 
+                   ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), 
+        margin=dict(l=70, r=50, t=80, b=30)
+    )
 
-    # Bar chart: net exposure by strike
-    fig_b = go.Figure(go.Bar(x=agg.index, y=agg.values, marker_color=['#2563eb' if v < 0 else '#fbbf24' for v in agg.values]))
-    fig_b.update_layout(title=f"Net {mode} by Strike", template="plotly_dark", height=400, xaxis=dict(title="Strike", tickformat=",d"), yaxis=dict(title="Exposure ($)", tickformat="$,.2s"))
-    fig_b.add_annotation(x=closest_strike, y=0, text="▲ Spot", showarrow=False, font=dict(color="yellow", size=12), yref="paper", yshift=-20)
-
-    return fig_h, fig_b
+    return fig
 
 # -------------------------
-# Main App (compact controls, no model dropdown, no captions, no slider)
+# Main App
 # -------------------------
 def main():
-    # Small centered title moved down slightly (margin-top) so it's not cut off
     st.markdown(
         "<div style='text-align:center; margin-top:6px;'><h2 style='font-size:18px; margin:10px 0 6px 0; font-weight:600;'>📈 GEX / VEX Pro</h2></div>",
         unsafe_allow_html=True,
     )
 
-    # Compact single-line toolbar: tweak column ratios to keep widgets compact
-    col1, col2, col3, col4, col5 = st.columns([1.7, 0.9, 0.8, 0.8, 0.8])
+    # Compact toolbar
+    col1, col2, col3, col4 = st.columns([1.5, 0.8, 0.8, 0.6])
     with col1:
         ticker = st.text_input("Ticker", "SPY", key="ticker_compact").upper().strip()
     with col2:
-        mode = st.radio("Metric", ["GEX", "VEX"], horizontal=True, key="mode_compact")
+        # Set defaults based on ticker
+        is_spx = ticker in ["SPX", "^SPX", "SPXW", "^SPXW"]
+        default_exp = 5
+        default_range = 80 if is_spx else 25
+        
+        max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=default_exp, step=1, key="maxexp_compact")
     with col3:
-        max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=6, step=1, key="maxexp_compact")
+        s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=default_range, step=5, key="srange_compact")
     with col4:
-        s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=30, step=1, key="srange_compact")
-    with col5:
         run = st.button("Run", type="primary", key="run_compact")
 
     if run:
@@ -355,9 +353,21 @@ def main():
                 c1.metric("Net Dealer GEX", f"{p_g}${abs(t_gex):,.2f}B")
                 c2.metric("Net Dealer VEX (per 1% IV)", f"{p_v}${abs(t_vex):,.2f}B")
 
-                h_fig, b_fig = render_plots(processed, ticker, S, mode)
-                if h_fig: st.plotly_chart(h_fig, use_container_width=True)
-                if b_fig: st.plotly_chart(b_fig, use_container_width=True)
+                st.markdown("---")
+                
+                # Render both GEX and VEX side by side
+                col_gex, col_vex = st.columns(2)
+                
+                with col_gex:
+                    gex_fig = render_plot(processed, ticker, S, "GEX")
+                    if gex_fig:
+                        st.plotly_chart(gex_fig, width="stretch")
+                
+                with col_vex:
+                    vex_fig = render_plot(processed, ticker, S, "VEX")
+                    if vex_fig:
+                        st.plotly_chart(vex_fig, width="stretch")
+                        
             else:
                 st.warning("No data found in range. Check if market is open or broaden strike range.")
         else:
