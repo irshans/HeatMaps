@@ -326,11 +326,20 @@ def main():
 
         col_gex, col_vex = st.columns(2)
 
-        with col_gex:
-            st.plotly_chart(render_heatmap(df, ticker, S, "GEX", flip))
+        col_gex, col_vex = st.columns(2)
 
+        with col_gex:
+            st.plotly_chart(
+                render_heatmap(df, ticker, S, "GEX", flip),
+                key="enhanced_gex_heatmap"
+            )
+        
         with col_vex:
-            st.plotly_chart(render_heatmap(df, ticker, S, "VEX", flip))
+            st.plotly_chart(
+                render_heatmap(df, ticker, S, "VEX", flip),
+                key="enhanced_vex_heatmap"
+            )
+
 
         st.write(df.head(20))
 
