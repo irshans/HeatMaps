@@ -1,12 +1,25 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 import requests
 from datetime import datetime
 import pytz
 from scipy.stats import norm
 
+# --- APP CONFIG ---
 st.set_page_config(page_title="GEX & VANEX Pro", page_icon="📊", layout="wide")
+
+st.markdown("""
+    <style>
+    * { font-family: 'Arial', sans-serif !important; }
+    .block-container { padding-top: 24px; padding-bottom: 8px; }
+    [data-testid="stMetricValue"] { font-size: 20px !important; font-family: 'Arial' !important; }
+    h1, h2, h3 { font-size: 18px !important; margin: 10px 0 6px 0 !important; font-weight: bold; }
+    hr { margin: 15px 0 !important; }
+    [data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- SECRETS ---
 if "TRADIER_TOKEN" in st.secrets:
@@ -25,28 +38,86 @@ CUSTOM_COLORSCALE = [
 ]
 
 # -------------------------
-# BLACK–SCHOLES CORE
+# QUANT PARAMETERS
 # -------------------------
-
 RISK_FREE = 0.045
 
+
+def tradier_get(endpoint, params):
+    headers = {
+        "Authorization": f"Bearer {TRADIER_TOKEN}",
+        "Accept": "application/json"
+    }
+    try:
+        r = requests.get(f"{BASE_URL}{endpoint}", params=params, headers=headers, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        st.error(f"Tradier error: {e}")
+    return None
+
+
+@st.cache_data(ttl=3600)
+def fetch_data(ticker, max_exp):
+    quote_data = tradier_get("markets/quotes", {"symbols": ticker})
+    if not quote_data:
+        return None, None
+
+    q = quote_data['quotes']['quote']
+    S = float(q['last']) if isinstance(q, dict) else float(q[0]['last'])
+
+    exp_data = tradier_get(
+        "markets/options/expirations",
+        {"symbol": ticker, "includeAllRoots": "true"}
+    )
+    if not exp_data:
+        return S, None
+
+    all_exps = exp_data['expirations']['date']
+    if not isinstance(all_exps, list):
+        all_exps = [all_exps]
+
+    dfs = []
+    prog = st.progress(0, text="Fetching chain…")
+
+    for i, exp in enumerate(sorted(all_exps)[:max_exp]):
+        chain = tradier_get(
+            "markets/options/chains",
+            {"symbol": ticker, "expiration": exp, "greeks": "true"}
+        )
+
+        if chain and chain['options'] and chain['options']['option']:
+            opts = chain['options']['option']
+            dfs.append(
+                pd.DataFrame(opts) if isinstance(opts, list)
+                else pd.DataFrame([opts])
+            )
+
+        prog.progress((i + 1) / max_exp)
+
+    prog.empty()
+
+    return S, pd.concat(dfs, ignore_index=True) if dfs else None
+
+
+# -------------------------
+# BLACK–SCHOLES RECOMPUTE
+# -------------------------
 def bs_time_to_exp(expiry):
     now = pd.Timestamp.now()
     exp = pd.to_datetime(expiry)
     return max((exp - now).days, 0) / 365.0
 
 
-def bs_gamma(S, K, T, iv, option_type):
+def bs_gamma(S, K, T, iv):
     if T <= 0 or iv <= 0:
         return 0.0
 
     d1 = (np.log(S / K) + (RISK_FREE + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
-    gamma = norm.pdf(d1) / (S * iv * np.sqrt(T))
-    return gamma
+    return norm.pdf(d1) / (S * iv * np.sqrt(T))
 
 
 def bs_charm(S, K, T, iv):
-    """Time derivative of gamma – CHARM"""
     if T <= 0 or iv <= 0:
         return 0.0
 
@@ -59,10 +130,7 @@ def bs_charm(S, K, T, iv):
     return term1 / term2
 
 
-def dealer_delta_weight(exp_type, T):
-    """Extra weight for 0DTE products"""
-    days = T * 365
-
+def dealer_delta_weight(days):
     if days <= 1:
         return 2.2
     if days <= 7:
@@ -71,11 +139,11 @@ def dealer_delta_weight(exp_type, T):
         return 1.25
     return 1.0
 
-# -------------------------
-# PROCESSING
-# -------------------------
 
-def process_exposure_enhanced(df, S, s_range):
+# -------------------------
+# EXPOSURE PROCESSING – ENHANCED
+# -------------------------
+def process_exposure(df, S, s_range):
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -84,19 +152,23 @@ def process_exposure_enhanced(df, S, s_range):
 
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range)]
 
+    # --- EXPIRATION DOMINANCE WEIGHTING ---
     expiries_dom = df.groupby("expiration_date")["open_interest"].sum()
     total_oi_all = expiries_dom.sum()
 
     expiry_weights = {}
     for exp, oi in expiries_dom.items():
-        w = oi / total_oi_all if total_oi_all > 0 else 1.0
-        w *= dealer_delta_weight("spx" if "SPX" in exp.upper() else "other", oi)
-        expiry_weights[exp] = w
+        expiry_weights[exp] = oi / total_oi_all if total_oi_all > 0 else 1.0
 
-    records = []
+    res = []
+    today = pd.Timestamp.now()
 
     for _, row in df.iterrows():
         g = row.get("greeks") or {}
+
+        gamma_p = float(g.get("gamma") or 0)
+        delta_p = float(g.get("delta") or 0)
+        vega_p = float(g.get("vega") or 0)
 
         iv = float(g.get("smv_vol") or g.get("mid_iv") or 0)
         if iv > 1:
@@ -104,78 +176,56 @@ def process_exposure_enhanced(df, S, s_range):
         iv = max(iv, 0.05)
 
         K = float(row["strike"])
-        T = bs_time_to_exp(row["expiration_date"])
+        expiry = row["expiration_date"]
+        T = bs_time_to_exp(expiry)
+        days = max((pd.to_datetime(expiry) - today).days, 0)
 
-        gamma = bs_gamma(S, K, T, iv, row["option_type"])
-        charm = bs_charm(S, K, T, iv)
-
-        oi = int(row.get("open_interest", 0) or 0)
-        delta = float(g.get("delta") or 0)
+        # --- DEALER-RECOMPUTED GAMMA (NOT PROVIDER GAMMA) ---
+        gamma_bs = bs_gamma(S, K, T, iv)
 
         side = 1 if row["option_type"].lower() == "call" else -1
-        w_exp = expiry_weights.get(row["expiration_date"], 1.0)
+        oi = int(row.get("open_interest", 0) or 0)
 
-        # --- DOLLAR GAMMA RECOMPUTED ---
-        gex_dollar = side * gamma * (S**2) * 0.01 * 100 * oi * w_exp
+        weight = expiry_weights.get(expiry, 1.0)
+        weight *= dealer_delta_weight(days)
 
-        # --- DEALER VANNA ---
-        vanna = (vega := float(g.get("vega") or 0)) * delta / (S * iv)
-        vanex_dealer = -vanna * S * 100 * oi * w_exp
+        # --- INSTITUTIONAL GEX ---
+        gex = side * gamma_bs * (S**2) * 0.01 * 100 * oi * weight
 
-        # --- 0DTE INTRADAY FLOW SENSITIVITY ---
-        if T * 365 <= 1:
-            gex_intraday = gex_dollar * 2.5
-            vanex_intraday = vanex_dealer * 2.0
-        else:
-            gex_intraday = gex_dollar
-            vanex_intraday = vanex_dealer
+        # --- VANNA WALL ---
+        vanna = vega_p * delta_p / (S * iv)
+        vanex = -vanna * S * 100 * oi * weight
 
-        # --- CHARM ADJUSTMENT ---
-        charm_impact = side * charm * 100 * oi * w_exp
-        gex_charm_adj = gex_dollar + charm_impact
+        # --- 0DTE FLOW SENSITIVITY ---
+        if days <= 1:
+            gex *= 2.5
+            vanex *= 2.0
 
-        records.append({
+        # --- CHARM DECAY ADJUSTMENT ---
+        charm = bs_charm(S, K, T, iv)
+        gex_charm = gex + side * charm * 100 * oi * weight
+
+        if not np.isfinite([gex, vanex, gex_charm]).all():
+            continue
+
+        res.append({
             "strike": K,
-            "expiry": row["expiration_date"],
-            "gex": gex_dollar,
-            "gex_charm": gex_charm_adj,
-            "vanex": vanex_intraday,
-            "dex": -side * delta * 100 * oi * w_exp,
-            "gamma_bs": gamma * side * oi,
-            "charm": charm_impact,
+            "expiry": expiry,
+            "gex": gex,
+            "gex_charm": gex_charm,
+            "vanex": vanex,
+            "dex": -side * delta_p * 100 * oi * weight,
+            "gamma": gamma_bs * side * oi,
             "oi": oi,
-            "weight": w_exp
+            "weight": round(weight, 3)
         })
 
-    out = pd.DataFrame(records)
+    out = pd.DataFrame(res)
 
-    # --- VANNA WALL INFERENCE ---
-    vanna_walls = out.groupby("strike")["vanex"].sum()
-    top_walls = vanna_walls.reindex(sorted(vanna_walls.index)).nlargest(3)
-
-    st.info(f"🧱 Top 1–3 Dealer Vanna Walls: {list(top_walls.index)}")
-
-    # --- REGIME PROBABILITIES ---
-    net_gex = out["gex"].sum()
-    flip = find_gamma_flip(out)
-
-    regime_probs = {}
-
-    if flip:
-        dist = (S - flip) / S
-        p_above = norm.cdf(dist * 4)
-        regime_probs = {
-            "aboveFlip": round(p_above, 3),
-            "belowFlip": round(1 - p_above, 3)
-        }
-    else:
-        p_stable = norm.cdf(net_gex / 1e6)
-        regime_probs = {
-            "stable": round(p_stable, 3),
-            "trend": round(1 - p_stable, 3)
-        }
-
-    st.write("Regime Probabilities", regime_probs)
+    # --- REAL VANNA WALL INFERENCE ---
+    if not out.empty:
+        walls = out.groupby("strike")["vanex"].sum().nlargest(3)
+        st.info(f"🧱 Top 1–3 Dealer Vanna Walls: {list(walls.index)}")
 
     return out
 
@@ -183,19 +233,16 @@ def process_exposure_enhanced(df, S, s_range):
 def find_gamma_flip(df):
     if df.empty:
         return None
-
-    strike_sums = df.groupby("strike")["gex"].sum().sort_index()
-
-    for i in range(len(strike_sums) - 1):
-        if strike_sums.iloc[i] * strike_sums.iloc[i + 1] < 0:
-            return strike_sums.index[i]
-
+    sums = df.groupby("strike")["gex"].sum().sort_index()
+    for i in range(len(sums) - 1):
+        if sums.iloc[i] * sums.iloc[i + 1] < 0:
+            return sums.index[i]
     return None
 
-# -------------------------
-# RENDERING (YOUR STUDY)
-# -------------------------
 
+# -------------------------
+# RENDERING
+# -------------------------
 def render_heatmap(df, ticker, S, mode, flip_strike):
     pivot = df.pivot_table(index="strike", columns="expiry", values="gex", aggfunc="sum")
     pivot = pivot.sort_index(ascending=False)
@@ -210,21 +257,82 @@ def render_heatmap(df, ticker, S, mode, flip_strike):
 
     return fig
 
-# -------------------------
-# MAIN
-# -------------------------
 
+def render_study_tiers(df, S):
+    """Return top gamma tiers as levels for TOS style study"""
+    if df.empty:
+        return []
+
+    by_strike = df.groupby("strike")["gex"].sum()
+
+    tiers = {
+        "top": by_strike.nlargest(3).index.tolist(),
+        "secondary": by_strike.nlargest(8).index.tolist(),
+        "noise": by_strike[abs(by_strike) < 50000].index.tolist()
+    }
+
+    st.write("TOS Tiers", tiers)
+
+    return tiers
+
+
+def regime_probabilities(df, S):
+    if df.empty:
+        return {}
+
+    flip = find_gamma_flip(df)
+    net = df["gex"].sum()
+
+    if flip:
+        dist = (S - flip) / S
+        p_above = norm.cdf(dist * 4)
+        return {"aboveFlip": round(p_above, 3), "belowFlip": round(1 - p_above, 3)}
+
+    p_stable = norm.cdf(net / 1e6)
+    return {"stable": round(p_stable, 3), "trend": round(1 - p_stable, 3)}
+
+
+# -------------------------
+# MAIN PAGE
+# -------------------------
 def main():
-    c1, c2, c3 = st.columns([1.5, 1, 1])
+    st.title("Dealer Aware GEX & VANEX")
+
+    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1], vertical_alignment="bottom")
+
     ticker = c1.text_input("Ticker", value="SPX").upper().strip()
     max_exp = c2.number_input("Expiries", 1, 15, 5)
     s_range = c3.number_input("Strike ±", 5, 500, 80)
+    refresh = c4.button("🔄 Refresh Data")
 
-    if st.button("🔄 Run Enhanced"):
+    if refresh:
+        st.cache_data.clear()
+        st.session_state.trigger_refresh = True
+
+    if "trigger_refresh" not in st.session_state:
+        st.session_state.trigger_refresh = True
+
+    if st.button("RUN STUDY"):
         S, raw_df = fetch_data(ticker, max_exp)
-        df = process_exposure_enhanced(raw_df, S, s_range)
 
-        st.plotly_chart(render_heatmap(df, ticker, S, "GEX", None))
+        df = process_exposure(raw_df, S, s_range)
+
+        flip = find_gamma_flip(df)
+
+        probs = regime_probabilities(df, S)
+        st.write("Regime", probs)
+
+        df_tiers = render_study_tiers(df, S)
+
+        col_gex, col_vex = st.columns(2)
+
+        with col_gex:
+            st.plotly_chart(render_heatmap(df, ticker, S, "GEX", flip))
+
+        with col_vex:
+            st.plotly_chart(render_heatmap(df, ticker, S, "VEX", flip))
+
+        st.write(df.head(20))
 
 
 if __name__ == "__main__":
