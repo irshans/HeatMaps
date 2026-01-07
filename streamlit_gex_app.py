@@ -68,7 +68,10 @@ def fetch_data(ticker, max_exp):
         chain = tradier_get("markets/options/chains", {"symbol": ticker, "expiration": exp, "greeks": "true"})
         if chain and chain.get('options') and chain['options'].get('option'):
             opts = chain['options']['option']
-            dfs.append(pd.DataFrame(opts if isinstance(opts, list) else [opts]))
+            df_chunk = pd.DataFrame(opts if isinstance(opts, list) else [opts])
+            # Store the expiration date directly in the dataframe
+            df_chunk['expiration_date'] = exp
+            dfs.append(df_chunk)
         prog.progress((i + 1) / len(exps_to_fetch))
     prog.empty()
     return S, pd.concat(dfs, ignore_index=True) if dfs else None
@@ -87,12 +90,27 @@ def process_exposure(df, S, strikes_count):
     selected_strikes = unique_strikes[max(0, idx-half) : min(len(unique_strikes), idx+half)]
     df = df[df['strike'].isin(selected_strikes)].copy()
 
-    # Greeks
-    df['iv'] = pd.to_numeric(df.get('greeks', {}).apply(lambda x: x.get('mid_iv') if isinstance(x, dict) else 0.2), errors='coerce').fillna(0.2)
+    # Greeks - handle missing greeks data gracefully
+    if 'greeks' in df.columns:
+        df['iv'] = pd.to_numeric(df['greeks'].apply(lambda x: x.get('mid_iv') if isinstance(x, dict) else None), errors='coerce')
+    else:
+        df['iv'] = None
+    
+    # If IV is missing, use implied_volatility field or default
+    if 'implied_volatility' in df.columns:
+        df['iv'] = df['iv'].fillna(pd.to_numeric(df['implied_volatility'], errors='coerce'))
+    
+    df['iv'] = df['iv'].fillna(0.2)
     df.loc[df['iv'] > 1.0, 'iv'] /= 100.0
+    df.loc[df['iv'] <= 0, 'iv'] = 0.2  # Replace zero or negative IV with default
     
     df['expiry_dt'] = pd.to_datetime(df['expiration_date'])
     df['T'] = np.maximum((df['expiry_dt'] - pd.Timestamp.now()).dt.total_seconds() / (365*24*3600), 1e-5)
+    
+    # For 0DTE options (expiring today), use a minimum time of 1 hour
+    current_time = pd.Timestamp.now()
+    is_0dte = df['expiry_dt'].dt.date == current_time.date()
+    df.loc[is_0dte, 'T'] = np.maximum(df.loc[is_0dte, 'T'], 1/365/24)  # Minimum 1 hour
     
     # Calculate d1 and d2 for Black-Scholes Greeks
     d1 = (np.log(S / df['strike']) + (RISK_FREE_RATE + 0.5 * df['iv']**2) * df['T']) / (df['iv'] * np.sqrt(df['T']))
@@ -130,23 +148,31 @@ def render_heatmap(df, S, metric, title):
     strikes_to_show = unique_strikes[max(0, idx-20):min(len(unique_strikes), idx+21)]
     df_filtered = df[df['strike'].isin(strikes_to_show)].copy()
     
-    # 2. Pivot
+    # 2. Pivot - use the expiration_date we explicitly set during fetch
     pivot = df_filtered.pivot_table(index='strike', columns='expiration_date', values=metric, aggfunc='sum')
     
-    # 3. STRICT WEEKEND REMOVAL - Drop weekend/holiday columns entirely
+    # 3. STRICT WEEKEND REMOVAL - Filter columns that are weekdays
     weekday_cols = []
     for c in pivot.columns:
-        dt = pd.to_datetime(c)
-        if dt.dayofweek < 5 and dt not in MARKET_HOLIDAYS:
-            weekday_cols.append(c)
+        try:
+            dt = pd.to_datetime(c)
+            # Only keep Mon-Fri that are not holidays
+            if dt.dayofweek < 5 and dt not in MARKET_HOLIDAYS:
+                weekday_cols.append(c)
+        except:
+            continue
     
     if not weekday_cols:
+        st.warning("No weekday expirations found in data")
         return None
         
     pivot = pivot[weekday_cols]
     
-    # 4. Fill missing values with 0
+    # 4. Replace NaN with 0 (shows as $0 instead of empty)
     pivot = pivot.fillna(0).sort_index(ascending=False)
+    
+    # Debug: Show what dates we're using
+    st.caption(f"Showing expirations: {', '.join([str(c) for c in pivot.columns])}")
     
     # 5. Find max absolute value cell for star marker
     abs_vals = np.abs(pivot.values)
