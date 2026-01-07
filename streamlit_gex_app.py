@@ -11,38 +11,39 @@ from scipy.stats import norm
 st.set_page_config(page_title="GEX & VANEX Pro", page_icon="📊", layout="wide")
 
 st.markdown("""
-    <style>
-    * { font-family: 'Arial', sans-serif !important; }
-    .block-container { padding-top: 24px; padding-bottom: 8px; }
-    [data-testid="stMetricValue"] { font-size: 20px !important; font-family: 'Arial' !important; }
-    h1, h2, h3 { font-size: 18px !important; margin: 10px 0 6px 0 !important; font-weight: bold; }
-    hr { margin: 15px 0 !important; }
-    [data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+* { font-family: 'Arial', sans-serif !important; }
+.block-container { padding-top: 24px; padding-bottom: 8px; }
+[data-testid="stMetricValue"] { font-size: 20px !important; }
+hr { margin: 15px 0 !important; }
+[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- SECRETS ---
 if "TRADIER_TOKEN" in st.secrets:
     TRADIER_TOKEN = st.secrets["TRADIER_TOKEN"]
 else:
-    st.error("Please set TRADIER_TOKEN in Streamlit Secrets.")
+    st.error("Please set TRADIER_TOKEN in Secrets.")
     st.stop()
 
 BASE_URL = "https://api.tradier.com/v1/"
 
 CUSTOM_COLORSCALE = [
-    [0.00, '#050018'], [0.10, '#260446'], [0.25, '#56117a'],
-    [0.40, '#6E298A'], [0.49, '#783F8F'], [0.50, '#224B8B'],
-    [0.52, '#32A7A7'], [0.65, '#39B481'], [0.80, '#A8D42A'],
-    [0.92, '#FFDF4A'], [1.00, '#F1F50C']
+    [0.00, '#050018'], [0.25, '#56117a'],
+    [0.50, '#224B8B'], [0.65, '#39B481'],
+    [0.80, '#A8D42A'], [1.00, '#F1F50C']
 ]
 
 # -------------------------
 # QUANT PARAMETERS
 # -------------------------
 RISK_FREE = 0.045
+RISK_FREE_RATE = 0.045
 
-
+# -------------------------
+# FETCH
+# -------------------------
 def tradier_get(endpoint, params):
     headers = {
         "Authorization": f"Bearer {TRADIER_TOKEN}",
@@ -104,9 +105,10 @@ def fetch_data(ticker, max_exp):
 # BLACK–SCHOLES RECOMPUTE
 # -------------------------
 def bs_time_to_exp(expiry):
-    now = pd.Timestamp.now()
+    today = pd.Timestamp.now()
     exp = pd.to_datetime(expiry)
-    return max((exp - now).days, 0) / 365.0
+    days = max((exp - today).days, 0)
+    return days / 365.0
 
 
 def bs_gamma(S, K, T, iv):
@@ -145,20 +147,21 @@ def dealer_delta_weight(days):
 # -------------------------
 def process_exposure(df, S, s_range):
     if df is None or df.empty:
+        st.warning("Input dataframe empty")
         return pd.DataFrame()
 
     df = df.copy()
     df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
-
     df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range)]
 
-    # --- EXPIRATION DOMINANCE WEIGHTING ---
+    # Expiry weights
     expiries_dom = df.groupby("expiration_date")["open_interest"].sum()
     total_oi_all = expiries_dom.sum()
 
-    expiry_weights = {}
-    for exp, oi in expiries_dom.items():
-        expiry_weights[exp] = oi / total_oi_all if total_oi_all > 0 else 1.0
+    expiry_weights = {
+        exp: oi / total_oi_all if total_oi_all > 0 else 1.0
+        for exp, oi in expiries_dom.items()
+    }
 
     res = []
     today = pd.Timestamp.now()
@@ -177,10 +180,10 @@ def process_exposure(df, S, s_range):
 
         K = float(row["strike"])
         expiry = row["expiration_date"]
-        T = bs_time_to_exp(expiry)
+        T = max((pd.to_datetime(expiry) - today).days, 0) / 365.0
         days = max((pd.to_datetime(expiry) - today).days, 0)
 
-        # --- DEALER-RECOMPUTED GAMMA (NOT PROVIDER GAMMA) ---
+        # BS Greeks
         gamma_bs = bs_gamma(S, K, T, iv)
 
         side = 1 if row["option_type"].lower() == "call" else -1
@@ -189,45 +192,36 @@ def process_exposure(df, S, s_range):
         weight = expiry_weights.get(expiry, 1.0)
         weight *= dealer_delta_weight(days)
 
-        # --- INSTITUTIONAL GEX ---
         gex = side * gamma_bs * (S**2) * 0.01 * 100 * oi * weight
 
-        # --- VANNA WALL ---
+        # VANEX
         vanna = vega_p * delta_p / (S * iv)
         vanex = -vanna * S * 100 * oi * weight
 
-        # --- 0DTE FLOW SENSITIVITY ---
+        # 0DTE boost
         if days <= 1:
             gex *= 2.5
             vanex *= 2.0
 
-        # --- CHARM DECAY ADJUSTMENT ---
         charm = bs_charm(S, K, T, iv)
         gex_charm = gex + side * charm * 100 * oi * weight
 
-        if not np.isfinite([gex, vanex, gex_charm]).all():
+        if not np.isfinite(gex):
             continue
 
         res.append({
             "strike": K,
             "expiry": expiry,
             "gex": gex,
-            "gex_charm": gex_charm,
             "vanex": vanex,
-            "dex": -side * delta_p * 100 * oi * weight,
+            "gex_charm": gex_charm,
             "gamma": gamma_bs * side * oi,
             "oi": oi,
-            "weight": round(weight, 3)
+            "days": days,
+            "weight": weight
         })
 
-    out = pd.DataFrame(res)
-
-    # --- REAL VANNA WALL INFERENCE ---
-    if not out.empty:
-        walls = out.groupby("strike")["vanex"].sum().nlargest(3)
-        st.info(f"🧱 Top 1–3 Dealer Vanna Walls: {list(walls.index)}")
-
-    return out
+    return pd.DataFrame(res)
 
 
 def find_gamma_flip(df):
@@ -241,55 +235,35 @@ def find_gamma_flip(df):
 
 
 # -------------------------
-# RENDERING
+# RENDER
 # -------------------------
 def render_heatmap(df, ticker, S, mode, flip_strike):
+    if df.empty:
+        return None
+
     pivot = df.pivot_table(index="strike", columns="expiry", values="gex", aggfunc="sum")
     pivot = pivot.sort_index(ascending=False)
 
-    fig = go.Figure(data=go.Heatmap(
-        z=pivot.values,
-        x=pivot.columns.tolist(),
-        y=pivot.index.tolist(),
-        colorscale=CUSTOM_COLORSCALE,
-        zmid=0
-    ))
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=pivot.values,
+            x=pivot.columns.tolist(),
+            y=pivot.index.tolist(),
+            colorscale=CUSTOM_COLORSCALE,
+            zmid=0
+        )
+    )
+
+    fig.add_vline(x=str(S), line_dash="dot")
+
+    if flip_strike:
+        fig.add_annotation(
+            y=flip_strike,
+            x=pivot.columns[0],
+            text="Gamma Flip"
+        )
 
     return fig
-
-
-def render_study_tiers(df, S):
-    """Return top gamma tiers as levels for TOS style study"""
-    if df.empty:
-        return []
-
-    by_strike = df.groupby("strike")["gex"].sum()
-
-    tiers = {
-        "top": by_strike.nlargest(3).index.tolist(),
-        "secondary": by_strike.nlargest(8).index.tolist(),
-        "noise": by_strike[abs(by_strike) < 50000].index.tolist()
-    }
-
-    st.write("TOS Tiers", tiers)
-
-    return tiers
-
-
-def regime_probabilities(df, S):
-    if df.empty:
-        return {}
-
-    flip = find_gamma_flip(df)
-    net = df["gex"].sum()
-
-    if flip:
-        dist = (S - flip) / S
-        p_above = norm.cdf(dist * 4)
-        return {"aboveFlip": round(p_above, 3), "belowFlip": round(1 - p_above, 3)}
-
-    p_stable = norm.cdf(net / 1e6)
-    return {"stable": round(p_stable, 3), "trend": round(1 - p_stable, 3)}
 
 
 # -------------------------
@@ -298,50 +272,51 @@ def regime_probabilities(df, S):
 def main():
     st.title("Dealer Aware GEX & VANEX")
 
-    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1], vertical_alignment="bottom")
+    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
 
     ticker = c1.text_input("Ticker", value="SPX").upper().strip()
     max_exp = c2.number_input("Expiries", 1, 15, 5)
     s_range = c3.number_input("Strike ±", 5, 500, 80)
-    refresh = c4.button("🔄 Refresh Data")
 
-    if refresh:
+    if c4.button("🔄 Refresh Data"):
         st.cache_data.clear()
-        st.session_state.trigger_refresh = True
-
-    if "trigger_refresh" not in st.session_state:
-        st.session_state.trigger_refresh = True
 
     if st.button("RUN STUDY"):
         S, raw_df = fetch_data(ticker, max_exp)
 
+        if raw_df is None:
+            st.warning("No data fetched")
+            return
+
         df = process_exposure(raw_df, S, s_range)
 
         flip = find_gamma_flip(df)
+        st.write("Regime", regime_probabilities(df, S))
 
-        probs = regime_probabilities(df, S)
-        st.write("Regime", probs)
+        fig_gex = render_heatmap(df, ticker, S, "GEX", flip)
+        fig_vex = render_heatmap(df, ticker, S, "VEX", flip)
 
-        df_tiers = render_study_tiers(df, S)
+        if fig_gex:
+            st.plotly_chart(fig_gex, key="gex_chart_key")
 
-        col_gex, col_vex = st.columns(2)
+        if fig_vex:
+            st.plotly_chart(fig_vex, key="vex_chart_key")
 
-        col_gex, col_vex = st.columns(2)
-
-        with col_gex:
-            st.plotly_chart(
-                render_heatmap(df, ticker, S, "GEX", flip),
-                key="enhanced_gex_heatmap"
-            )
-        
-        with col_vex:
-            st.plotly_chart(
-                render_heatmap(df, ticker, S, "VEX", flip),
-                key="enhanced_vex_heatmap"
-            )
+        st.dataframe(df.head(20), key="diag_table")
 
 
-        st.write(df.head(20))
+def regime_probabilities(df, S):
+    if df.empty:
+        return {}
+    flip = find_gamma_flip(df)
+    net = df["gex"].sum()
+
+    if flip:
+        dist = (S - flip) / S
+        p_above = norm.cdf(dist * 4)
+        return {"aboveFlip": p_above, "belowFlip": 1 - p_above}
+
+    return {"stable": norm.cdf(net / 1e6)}
 
 
 if __name__ == "__main__":
