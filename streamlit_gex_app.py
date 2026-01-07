@@ -31,6 +31,9 @@ def format_thousands(val):
     """Formats value in thousands with commas. Returns $0 if 0."""
     if val == 0 or np.isnan(val):
         return "$0"
+    # Put sign before dollar sign for negative values
+    if val < 0:
+        return f'-${abs(val)/1000:,.0f}'
     return f'${val/1000:,.0f}'
 
 # --- FETCHING ---
@@ -130,9 +133,10 @@ def process_exposure(df, S, strikes_count):
     df['gex'] = -1 * df['gamma_bs'] * (S**2) * 0.01 * df['open_interest'] * 100
     
     # VEX from DEALER perspective  
-    # Represents change in delta per 1 vol point change
-    # Scaled by 1% spot move for consistency with GEX
-    df['vex'] = -1 * df['vanna_bs'] * S * 0.01 * df['open_interest'] * 100
+    # Represents change in dollar delta per 1 vol point (1.0) change in IV
+    # Standard convention: dollar delta change per 1 point of volatility
+    # Note: Not scaled by spot move like GEX - this is pure vanna exposure
+    df['vex'] = -1 * df['vanna_bs'] * S * df['open_interest'] * 100
     
     return df
 
@@ -148,31 +152,31 @@ def render_heatmap(df, S, metric, title):
     strikes_to_show = unique_strikes[max(0, idx-20):min(len(unique_strikes), idx+21)]
     df_filtered = df[df['strike'].isin(strikes_to_show)].copy()
     
-    # 2. Pivot - use the expiration_date we explicitly set during fetch
-    pivot = df_filtered.pivot_table(index='strike', columns='expiration_date', values=metric, aggfunc='sum')
+    # 2. CRITICAL: Filter out weekend dates BEFORE pivoting
+    df_filtered['exp_dt'] = pd.to_datetime(df_filtered['expiration_date'])
+    df_filtered['is_weekday'] = df_filtered['exp_dt'].dt.dayofweek < 5
+    df_filtered['is_not_holiday'] = ~df_filtered['exp_dt'].isin(MARKET_HOLIDAYS)
     
-    # 3. STRICT WEEKEND REMOVAL - Filter columns that are weekdays
-    weekday_cols = []
-    for c in pivot.columns:
-        try:
-            dt = pd.to_datetime(c)
-            # Only keep Mon-Fri that are not holidays
-            if dt.dayofweek < 5 and dt not in MARKET_HOLIDAYS:
-                weekday_cols.append(c)
-        except:
-            continue
+    # Only keep weekday, non-holiday rows
+    df_filtered = df_filtered[df_filtered['is_weekday'] & df_filtered['is_not_holiday']].copy()
     
-    if not weekday_cols:
-        st.warning("No weekday expirations found in data")
+    if df_filtered.empty:
+        st.warning("No weekday expirations found after filtering")
         return None
-        
-    pivot = pivot[weekday_cols]
+    
+    # 3. Pivot with pre-filtered data
+    pivot = df_filtered.pivot_table(index='strike', columns='expiration_date', values=metric, aggfunc='sum')
     
     # 4. Replace NaN with 0 (shows as $0 instead of empty)
     pivot = pivot.fillna(0).sort_index(ascending=False)
     
-    # Debug: Show what dates we're using
-    st.caption(f"Showing expirations: {', '.join([str(c) for c in pivot.columns])}")
+    # Debug: Show what dates we're displaying
+    dates_info = []
+    for c in pivot.columns:
+        dt = pd.to_datetime(c)
+        day_name = dt.strftime('%a')
+        dates_info.append(f"{c} ({day_name})")
+    st.caption(f"Displaying: {', '.join(dates_info)}")
     
     # 5. Find max absolute value cell for star marker
     abs_vals = np.abs(pivot.values)
@@ -223,9 +227,8 @@ def render_heatmap(df, S, metric, title):
         template="plotly_dark",
         yaxis=dict(
             title="Strike",
-            tickmode='linear',
-            tick0=pivot.index.min(),
-            dtick=max(1, (pivot.index.max() - pivot.index.min()) / 40)
+            tickmode='auto',  # Let plotly determine optimal tick spacing
+            nticks=25  # Aim for ~25 ticks max for readability
         )
     )
     return fig
@@ -233,6 +236,14 @@ def render_heatmap(df, S, metric, title):
 def render_gex_concentration(df, S):
     """Render horizontal bar chart of GEX concentration by strike"""
     if df.empty: return None
+    
+    # Filter out weekend dates BEFORE processing
+    df['exp_dt'] = pd.to_datetime(df['expiration_date'])
+    df = df[(df['exp_dt'].dt.dayofweek < 5) & (~df['exp_dt'].isin(MARKET_HOLIDAYS))].copy()
+    
+    if df.empty:
+        st.warning("No weekday data for GEX concentration")
+        return None
     
     # Filter to strikes within 20 above and 20 below spot
     unique_strikes = sorted(df['strike'].unique())
@@ -320,6 +331,14 @@ def render_diagnostics(df, S):
     """Render calls and puts side by side with net calculations"""
     if df.empty: return None
     
+    # Filter out weekend dates BEFORE processing
+    df['exp_dt'] = pd.to_datetime(df['expiration_date'])
+    df = df[(df['exp_dt'].dt.dayofweek < 5) & (~df['exp_dt'].isin(MARKET_HOLIDAYS))].copy()
+    
+    if df.empty:
+        st.warning("No weekday data for diagnostics")
+        return None
+    
     # Filter to strikes within 20 above and 20 below spot
     unique_strikes = sorted(df['strike'].unique())
     idx = np.argmin(np.abs(np.array(unique_strikes) - S))
@@ -376,10 +395,90 @@ def main():
         - **Negative GEX**: Dealers are short gamma → must buy rallies and sell dips (destabilizing)
         - **Positive GEX**: Dealers are long gamma → sell rallies and buy dips (stabilizing)
         - **Zero GEX**: Gamma neutral, potential pivot point
+        - **Units**: Dollar gamma change per 1% move in underlying (
+    with st.sidebar:
+        ticker = st.text_input("Ticker", "SPX").upper()
+        strike_depth = st.select_slider("Strikes", options=[25, 40, 50, 80, 100, 150], value=80 if ticker=="SPX" else 40)
+        max_exp = st.number_input("Expiries", 1, 15, 5)
+        run = st.button("Calculate", type="primary")
+
+    if run:
+        S, raw_df = fetch_data(ticker, max_exp)
+        if raw_df is not None and S is not None:
+            df = process_exposure(raw_df, S, strike_depth)
+            
+            if not df.empty:
+                t1, t2, t3, t4 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "GEX Concentration", "Diagnostics"])
+                
+                with t1:
+                    fig = render_heatmap(df, S, 'gex', f"{ticker} Gamma ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t2:
+                    fig = render_heatmap(df, S, 'vex', f"{ticker} Vanna ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t3:
+                    fig = render_gex_concentration(df, S)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t4:
+                    render_diagnostics(df, S)
+            else:
+                st.error("No data available after processing")
+        else:
+            st.error("Failed to fetch data")
+
+if __name__ == "__main__":
+    main()
+000s)
         
         **Dealer Vanna Exposure (VEX)**
-        - **Positive VEX**: Rising volatility causes dealers to buy spot
-        - **Negative VEX**: Rising volatility causes dealers to sell spot
+        - **Positive VEX**: Rising volatility (by 1 vol point) causes dealers to buy spot
+        - **Negative VEX**: Rising volatility (by 1 vol point) causes dealers to sell spot
+        - **Units**: Dollar delta change per 1 vol point increase in IV (
+    with st.sidebar:
+        ticker = st.text_input("Ticker", "SPX").upper()
+        strike_depth = st.select_slider("Strikes", options=[25, 40, 50, 80, 100, 150], value=80 if ticker=="SPX" else 40)
+        max_exp = st.number_input("Expiries", 1, 15, 5)
+        run = st.button("Calculate", type="primary")
+
+    if run:
+        S, raw_df = fetch_data(ticker, max_exp)
+        if raw_df is not None and S is not None:
+            df = process_exposure(raw_df, S, strike_depth)
+            
+            if not df.empty:
+                t1, t2, t3, t4 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "GEX Concentration", "Diagnostics"])
+                
+                with t1:
+                    fig = render_heatmap(df, S, 'gex', f"{ticker} Gamma ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t2:
+                    fig = render_heatmap(df, S, 'vex', f"{ticker} Vanna ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t3:
+                    fig = render_gex_concentration(df, S)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t4:
+                    render_diagnostics(df, S)
+            else:
+                st.error("No data available after processing")
+        else:
+            st.error("Failed to fetch data")
+
+if __name__ == "__main__":
+    main()
+000s)
         
         **Key Levels**
         - **Call Wall**: Largest positive GEX strike (resistance)
