@@ -31,7 +31,7 @@ def format_thousands(val):
     """Formats value in thousands with commas. Returns $0 if 0."""
     if val == 0 or np.isnan(val):
         return "$0"
-    return f'{val/1000:,.0f}'
+    return f'${val/1000:,.0f}'
 
 # --- FETCHING ---
 def tradier_get(endpoint, params):
@@ -54,7 +54,7 @@ def fetch_data(ticker, max_exp):
     all_exps = exp_data['expirations']['date']
     if not isinstance(all_exps, list): all_exps = [all_exps]
     
-    # PRE-FILTER WEEKENDS
+    # PRE-FILTER WEEKENDS AND HOLIDAYS
     valid_exps = []
     for e in all_exps:
         dt = pd.to_datetime(e)
@@ -71,7 +71,7 @@ def fetch_data(ticker, max_exp):
             dfs.append(pd.DataFrame(opts if isinstance(opts, list) else [opts]))
         prog.progress((i + 1) / len(exps_to_fetch))
     prog.empty()
-    return S, pd.concat(dfs, ignore_index=True) if dfs else (S, None)
+    return S, pd.concat(dfs, ignore_index=True) if dfs else None
 
 # --- CALCULATIONS ---
 def process_exposure(df, S, strikes_count):
@@ -113,25 +113,185 @@ def render_heatmap(df, S, metric, title):
     # 1. Pivot
     pivot = df.pivot_table(index='strike', columns='expiration_date', values=metric, aggfunc='sum')
     
-    # 2. STRICT WEEKEND REMOVAL (Drop columns if date is Sat/Sun)
-    cols_to_keep = [c for c in pivot.columns if pd.to_datetime(c).dayofweek < 5]
-    pivot = pivot[cols_to_keep]
+    # 2. STRICT WEEKEND REMOVAL - Only keep weekday columns
+    weekday_cols = []
+    for c in pivot.columns:
+        dt = pd.to_datetime(c)
+        if dt.dayofweek < 5 and dt not in MARKET_HOLIDAYS:
+            weekday_cols.append(c)
     
-    # 3. Fill missing values with 0 so they display as $0
+    pivot = pivot[weekday_cols]
+    
+    # 3. Fill missing values with 0
     pivot = pivot.fillna(0).sort_index(ascending=False)
     
-    text_values = pivot.applymap(format_thousands).values
-    max_val = np.percentile(np.abs(pivot.values), 98) if np.any(pivot.values) else 1
+    # 4. Find max absolute value cell for star marker
+    abs_vals = np.abs(pivot.values)
+    max_idx = np.unravel_index(np.argmax(abs_vals), abs_vals.shape)
+    
+    # 5. Create text with star on max value
+    text_values = []
+    for i in range(len(pivot.index)):
+        row_text = []
+        for j in range(len(pivot.columns)):
+            val_str = format_thousands(pivot.iloc[i, j])
+            if (i, j) == max_idx:
+                val_str += " ★"
+            row_text.append(val_str)
+        text_values.append(row_text)
+    
+    max_val = np.percentile(abs_vals, 98) if np.any(pivot.values) else 1
 
     fig = go.Figure(data=go.Heatmap(
-        z=pivot.values, x=pivot.columns, y=pivot.index,
-        text=text_values, texttemplate="%{text}", textfont={"size": 9},
-        colorscale=CUSTOM_COLORSCALE, zmid=0, zmin=-max_val, zmax=max_val
+        z=pivot.values, 
+        x=pivot.columns, 
+        y=pivot.index,
+        text=text_values, 
+        texttemplate="%{text}", 
+        textfont={"size": 9},
+        colorscale=CUSTOM_COLORSCALE, 
+        zmid=0, 
+        zmin=-max_val, 
+        zmax=max_val
     ))
 
-    fig.add_hline(y=S, line_dash="dash", line_color="white", annotation_text=f"Spot: {S:.2f}")
-    fig.update_layout(title=title, height=800, template="plotly_dark")
+    # Add spot marker with arrow
+    fig.add_annotation(
+        x=-0.08, y=S, xref="paper", yref="y",
+        text="➤", showarrow=False,
+        font=dict(size=20, color="yellow"),
+        xanchor="right"
+    )
+    
+    fig.add_hline(y=S, line_dash="dash", line_color="yellow", line_width=1, opacity=0.5)
+    
+    fig.update_layout(
+        title=title, 
+        height=800, 
+        template="plotly_dark",
+        yaxis=dict(title="Strike")
+    )
     return fig
+
+def render_gex_concentration(df):
+    """Render horizontal bar chart of GEX concentration by strike"""
+    if df.empty: return None
+    
+    # Aggregate GEX by strike
+    gex_by_strike = df.groupby('strike')['gex'].sum().sort_index()
+    
+    # Calculate key levels
+    abs_gex = gex_by_strike.abs()
+    sorted_strikes = abs_gex.sort_values(ascending=False).index
+    
+    # Find walls and floor/ceiling
+    positive_gex = gex_by_strike[gex_by_strike > 0]
+    negative_gex = gex_by_strike[gex_by_strike < 0]
+    
+    call_wall = positive_gex.idxmax() if len(positive_gex) > 0 else None
+    put_wall = negative_gex.idxmin() if len(negative_gex) > 0 else None
+    
+    # Floor = highest strike with negative GEX, Ceiling = lowest strike with positive GEX
+    floor = negative_gex.index.max() if len(negative_gex) > 0 else None
+    ceiling = positive_gex.index.min() if len(positive_gex) > 0 else None
+    
+    # Create color array
+    colors = ['#00FF7F' if v > 0 else '#FF3333' for v in gex_by_strike.values]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=gex_by_strike.index,
+        x=gex_by_strike.values / 1000,  # Convert to thousands
+        orientation='h',
+        marker=dict(color=colors),
+        text=[format_thousands(v) for v in gex_by_strike.values],
+        textposition='outside',
+        hovertemplate='Strike: %{y}<br>GEX: %{text}<extra></extra>'
+    ))
+    
+    # Add annotations for key levels
+    annotations = []
+    if call_wall:
+        annotations.append(dict(
+            x=gex_by_strike[call_wall]/1000, y=call_wall,
+            text="Call Wall", showarrow=True, arrowhead=2,
+            ax=40, ay=0, font=dict(color='#00FF7F', size=12)
+        ))
+    if put_wall:
+        annotations.append(dict(
+            x=gex_by_strike[put_wall]/1000, y=put_wall,
+            text="Put Wall", showarrow=True, arrowhead=2,
+            ax=-40, ay=0, font=dict(color='#FF3333', size=12)
+        ))
+    if floor:
+        annotations.append(dict(
+            x=0, y=floor,
+            text="Floor", showarrow=True, arrowhead=2,
+            ax=-30, ay=-20, font=dict(color='white', size=10)
+        ))
+    if ceiling:
+        annotations.append(dict(
+            x=0, y=ceiling,
+            text="Ceiling", showarrow=True, arrowhead=2,
+            ax=-30, ay=20, font=dict(color='white', size=10)
+        ))
+    
+    fig.update_layout(
+        title="GEX Concentration by Strike",
+        xaxis_title="GEX ($'000s)",
+        yaxis_title="Strike",
+        height=700,
+        template="plotly_dark",
+        showlegend=False,
+        annotations=annotations
+    )
+    
+    return fig
+
+def render_diagnostics(df):
+    """Render calls and puts side by side with net calculations"""
+    if df.empty: return None
+    
+    # Separate calls and puts
+    calls = df[df['option_type'].str.lower() == 'call'].copy()
+    puts = df[df['option_type'].str.lower() == 'put'].copy()
+    
+    # Calculate net values
+    net_gex = df.groupby('strike')[['gex', 'vex']].sum()
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.subheader("📞 Calls")
+        if not calls.empty:
+            calls_display = calls[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('gex', ascending=False)
+            calls_display['gex'] = calls_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
+            calls_display['vex'] = calls_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
+            st.dataframe(calls_display, use_container_width=True, height=400)
+        else:
+            st.info("No call data")
+    
+    with col2:
+        st.subheader("📉 Puts")
+        if not puts.empty:
+            puts_display = puts[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('gex')
+            puts_display['gex'] = puts_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
+            puts_display['vex'] = puts_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
+            st.dataframe(puts_display, use_container_width=True, height=400)
+        else:
+            st.info("No put data")
+    
+    with col3:
+        st.subheader("🎯 Net by Strike")
+        net_display = net_gex.copy()
+        net_display['gex_fmt'] = net_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
+        net_display['vex_fmt'] = net_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
+        st.dataframe(
+            net_display[['gex_fmt', 'vex_fmt']].rename(columns={'gex_fmt': 'Net GEX', 'vex_fmt': 'Net VEX'}),
+            use_container_width=True,
+            height=400
+        )
 
 def main():
     st.title("GEX & VEX: Weekend-Free Surface")
@@ -144,16 +304,33 @@ def main():
 
     if run:
         S, raw_df = fetch_data(ticker, max_exp)
-        if raw_df is not None:
+        if raw_df is not None and S is not None:
             df = process_exposure(raw_df, S, strike_depth)
             
-            t1, t2, t3 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "Diagnostics"])
-            with t1:
-                st.plotly_chart(render_heatmap(df, S, 'gex', f"{ticker} Gamma ($'000s)"), use_container_width=True)
-            with t2:
-                st.plotly_chart(render_heatmap(df, S, 'vex', f"{ticker} Vanna ($'000s)"), use_container_width=True)
-            with t3:
-                st.dataframe(df[['expiration_date', 'strike', 'option_type', 'gex', 'vex', 'open_interest', 'iv']].sort_values('gex'), use_container_width=True)
+            if not df.empty:
+                t1, t2, t3, t4 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "GEX Concentration", "Diagnostics"])
+                
+                with t1:
+                    fig = render_heatmap(df, S, 'gex', f"{ticker} Gamma ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t2:
+                    fig = render_heatmap(df, S, 'vex', f"{ticker} Vanna ($'000s)")
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t3:
+                    fig = render_gex_concentration(df)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with t4:
+                    render_diagnostics(df)
+            else:
+                st.error("No data available after processing")
+        else:
+            st.error("Failed to fetch data")
 
 if __name__ == "__main__":
     main()
