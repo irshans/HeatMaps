@@ -1,382 +1,231 @@
 import streamlit as st
-import math
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import yfinance as yf
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+import requests
+from datetime import datetime
+import pytz
 from scipy.stats import norm
-import time
-import random
 
-# --- APP CONFIG ---
-st.set_page_config(page_title="GEX Pro 2025", page_icon="📊", layout="wide")
+st.set_page_config(page_title="GEX & VANEX Pro", page_icon="📊", layout="wide")
 
-# Compact UI styling
-st.markdown(
-    """
-    <style>
-    /* Increase top padding so title is visible and not cut off */
-    .block-container { padding-top: 24px; padding-bottom: 8px; }
+# --- SECRETS ---
+if "TRADIER_TOKEN" in st.secrets:
+    TRADIER_TOKEN = st.secrets["TRADIER_TOKEN"]
+else:
+    st.error("Please set TRADIER_TOKEN in Streamlit Secrets.")
+    st.stop()
 
-    /* Buttons */
-    button[kind="primary"], .stButton>button {
-        padding:4px 8px !important;
-        font-size:12px !important;
-        height:30px !important;
-    }
+BASE_URL = "https://api.tradier.com/v1/"
 
-    /* Inputs, selects, number inputs */
-    input[type="text"], input[type="number"], select {
-        padding:6px 8px !important;
-        font-size:12px !important;
-        height:28px !important;
-    }
-
-    /* Radio, selectbox height & font */
-    div[role="radiogroup"] label, .stSelectbox, .stRadio {
-        font-size:12px !important;
-    }
-
-    /* Sliders compact */
-    .stSlider > div, .stNumberInput > div {
-        font-size:12px !important;
-        height:34px !important;
-    }
-
-    /* Reduce margins for columns */
-    .css-1lcbmhc.e1tzin5v0 { gap: 6px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-CONTRACT_SIZE = 100
-FALLBACK_IV = 0.30
-RISK_FREE_RATE = 0.042
-SECONDS_IN_YEAR = 365 * 24 * 3600
+CUSTOM_COLORSCALE = [
+    [0.00, '#050018'], [0.10, '#260446'], [0.25, '#56117a'],
+    [0.40, '#6E298A'], [0.49, '#783F8F'], [0.50, '#224B8B'],
+    [0.52, '#32A7A7'], [0.65, '#39B481'], [0.80, '#A8D42A'],
+    [0.92, '#FFDF4A'], [1.00, '#F1F50C']
+]
 
 # -------------------------
-# Holiday & Date Logic
+# BLACK–SCHOLES CORE
 # -------------------------
-def get_actual_trading_day(date_str):
-    dt = pd.to_datetime(date_str).date()
-    holidays = {
-        '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
-        '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
-        '2026-01-01'
-    }
-    while dt.weekday() > 4 or dt.strftime('%Y-%m-%d') in holidays:
-        dt = dt - timedelta(days=1)
-    return dt.strftime('%Y-%m-%d')
 
-# -------------------------
-# Black-Scholes Math
-# -------------------------
-def get_greeks(S, K, r, sigma, T, option_type):
-    """
-    Return (gamma, delta, vega).
-    - vega returned is the standard BS vega (dPrice / dVol) per 1.0 vol unit.
-    """
-    MIN_T_YEARS = 60 / SECONDS_IN_YEAR
-    T_eff = max(T, MIN_T_YEARS)
-    sig_eff = max(sigma, 0.01)
-    d1 = (math.log(S / K) + (r + 0.5 * sig_eff**2) * T_eff) / (sig_eff * math.sqrt(T_eff))
-    gamma = norm.pdf(d1) / (S * sig_eff * math.sqrt(T_eff))
-    delta = norm.cdf(d1) if option_type == "call" else norm.cdf(d1) - 1
-    vega = S * norm.pdf(d1) * math.sqrt(T_eff)
-    return gamma, delta, vega
+RISK_FREE = 0.045
 
-# -------------------------
-# Data Fetcher
-# -------------------------
-@st.cache_data(ttl=300)
-def fetch_data_safe(ticker, max_exp):
-    if ticker.upper() in ["SPX", "NDX", "RUT"] and not ticker.startswith("^"):
-        ticker = f"^{ticker.upper()}"
+def bs_time_to_exp(expiry):
+    now = pd.Timestamp.now()
+    exp = pd.to_datetime(expiry)
+    return max((exp - now).days, 0) / 365.0
 
-    stock = yf.Ticker(ticker)
-    try:
-        hist = stock.history(period="5d")
-        if hist.empty:
-            return None, None
-        S = float(hist["Close"].iloc[-1])
 
-        all_exps = stock.options
-        if not all_exps:
-            return S, None
+def bs_gamma(S, K, T, iv, option_type):
+    if T <= 0 or iv <= 0:
+        return 0.0
 
-        target_exps = all_exps[:max_exp]
-        dfs = []
-        progress_text = st.empty()
-        prog_bar = st.progress(0)
+    d1 = (np.log(S / K) + (RISK_FREE + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
+    gamma = norm.pdf(d1) / (S * iv * np.sqrt(T))
+    return gamma
 
-        for i, exp in enumerate(target_exps):
-            progress_text.text(f"Fetching {ticker} expiry: {exp} ({i+1}/{len(target_exps)})")
-            for attempt in range(3):
-                try:
-                    time.sleep(random.uniform(0.25, 0.6))
-                    chain = stock.option_chain(exp)
-                    t_date = get_actual_trading_day(exp)
-                    calls = chain.calls.assign(option_type="call", expiration=t_date)
-                    puts = chain.puts.assign(option_type="put", expiration=t_date)
-                    dfs.append(pd.concat([calls, puts], ignore_index=True))
-                    break
-                except Exception:
-                    time.sleep(1)
-            prog_bar.progress((i + 1) / len(target_exps))
 
-        progress_text.empty()
-        prog_bar.empty()
+def bs_charm(S, K, T, iv):
+    """Time derivative of gamma – CHARM"""
+    if T <= 0 or iv <= 0:
+        return 0.0
 
-        if not dfs:
-            return S, None
-        options_df = pd.concat(dfs, ignore_index=True)
-        return S, options_df
-    except Exception as e:
-        st.error(f"Data fetch error: {e}")
-        return None, None
+    d1 = (np.log(S / K) + (RISK_FREE + 0.5 * iv**2) * T) / (iv * np.sqrt(T))
+    d2 = d1 - iv * np.sqrt(T)
+
+    term1 = -norm.pdf(d1) * (2 * RISK_FREE * T - d2 * iv * np.sqrt(T))
+    term2 = 2 * T * (S * iv * np.sqrt(T))**2
+
+    return term1 / term2
+
+
+def dealer_delta_weight(exp_type, T):
+    """Extra weight for 0DTE products"""
+    days = T * 365
+
+    if days <= 1:
+        return 2.2
+    if days <= 7:
+        return 1.6
+    if days <= 30:
+        return 1.25
+    return 1.0
 
 # -------------------------
-# GEX & VEX Processing
+# PROCESSING
 # -------------------------
-def process_exposure(df, S, s_range):
-    """
-    Computes exposures assuming the dealer model is:
-      Short Calls / Long Puts (fixed).
-    Dealer is short calls (dealer_pos = -1) and long puts (dealer_pos = +1).
-    """
+
+def process_exposure_enhanced(df, S, s_range):
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.copy()
-    eastern = ZoneInfo("US/Eastern")
-    now_eastern = datetime.now(tz=eastern)
-    today = now_eastern.date()
+    df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
 
-    df["exp_dt_obj"] = pd.to_datetime(df["expiration"]).dt.date
-    df["exp_date_only"] = df["exp_dt_obj"]
+    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range)]
 
-    df = df[(df["strike"] >= S - s_range) & (df["strike"] <= S + s_range) & (df["exp_date_only"] >= today)]
+    expiries_dom = df.groupby("expiration_date")["open_interest"].sum()
+    total_oi_all = expiries_dom.sum()
 
-    res = []
+    expiry_weights = {}
+    for exp, oi in expiries_dom.items():
+        w = oi / total_oi_all if total_oi_all > 0 else 1.0
+        w *= dealer_delta_weight("spx" if "SPX" in exp.upper() else "other", oi)
+        expiry_weights[exp] = w
+
+    records = []
+
     for _, row in df.iterrows():
-        try:
-            K = float(row["strike"])
-        except Exception:
-            continue
+        g = row.get("greeks") or {}
 
-        exp_date = pd.to_datetime(row["expiration"]).date()
-        exp_close = datetime(exp_date.year, exp_date.month, exp_date.day, 16, 0, tzinfo=eastern)
-        seconds_left = (exp_close - now_eastern).total_seconds()
-        if seconds_left <= 0:
-            continue
+        iv = float(g.get("smv_vol") or g.get("mid_iv") or 0)
+        if iv > 1:
+            iv /= 100.0
+        iv = max(iv, 0.05)
 
-        MIN_SECONDS = 60
-        seconds_for_T = max(seconds_left, MIN_SECONDS)
-        T = seconds_for_T / SECONDS_IN_YEAR
+        K = float(row["strike"])
+        T = bs_time_to_exp(row["expiration_date"])
 
-        oi = row.get("openInterest") or 0
-        vol = row.get("volume") or 0
-        liq = max(oi, vol)
-        if liq <= 0:
-            continue
+        gamma = bs_gamma(S, K, T, iv, row["option_type"])
+        charm = bs_charm(S, K, T, iv)
 
-        iv = row.get("impliedVolatility")
-        if iv is None or pd.isna(iv) or not (0.02 < float(iv) < 4.0):
-            iv = FALLBACK_IV
+        oi = int(row.get("open_interest", 0) or 0)
+        delta = float(g.get("delta") or 0)
+
+        side = 1 if row["option_type"].lower() == "call" else -1
+        w_exp = expiry_weights.get(row["expiration_date"], 1.0)
+
+        # --- DOLLAR GAMMA RECOMPUTED ---
+        gex_dollar = side * gamma * (S**2) * 0.01 * 100 * oi * w_exp
+
+        # --- DEALER VANNA ---
+        vanna = (vega := float(g.get("vega") or 0)) * delta / (S * iv)
+        vanex_dealer = -vanna * S * 100 * oi * w_exp
+
+        # --- 0DTE INTRADAY FLOW SENSITIVITY ---
+        if T * 365 <= 1:
+            gex_intraday = gex_dollar * 2.5
+            vanex_intraday = vanex_dealer * 2.0
         else:
-            iv = float(iv)
+            gex_intraday = gex_dollar
+            vanex_intraday = vanex_dealer
 
-        gamma, delta, vega = get_greeks(S, K, RISK_FREE_RATE, iv, T, row["option_type"])
+        # --- CHARM ADJUSTMENT ---
+        charm_impact = side * charm * 100 * oi * w_exp
+        gex_charm_adj = gex_dollar + charm_impact
 
-        # Fixed dealer model: Short Calls / Long Puts
-        dealer_pos = -1 if row["option_type"] == "call" else +1
+        records.append({
+            "strike": K,
+            "expiry": row["expiration_date"],
+            "gex": gex_dollar,
+            "gex_charm": gex_charm_adj,
+            "vanex": vanex_intraday,
+            "dex": -side * delta * 100 * oi * w_exp,
+            "gamma_bs": gamma * side * oi,
+            "charm": charm_impact,
+            "oi": oi,
+            "weight": w_exp
+        })
 
-        # GEX: dollars per 1% spot move
-        gex = dealer_pos * gamma * (S ** 2) * 0.01 * CONTRACT_SIZE * liq
-        # VEX: dollars per 1% IV move (vega per 1.0 * 0.01)
-        vex = dealer_pos * vega * 0.01 * CONTRACT_SIZE * liq
+    out = pd.DataFrame(records)
 
-        res.append({"strike": K, "expiry": row["expiration"], "gex": gex, "vex": vex})
+    # --- VANNA WALL INFERENCE ---
+    vanna_walls = out.groupby("strike")["vanex"].sum()
+    top_walls = vanna_walls.reindex(sorted(vanna_walls.index)).nlargest(3)
 
-    if not res:
-        return pd.DataFrame()
-    return pd.DataFrame(res)
+    st.info(f"🧱 Top 1–3 Dealer Vanna Walls: {list(top_walls.index)}")
 
-# -------------------------
-# Visualizations
-# -------------------------
-def render_plot(df, ticker, S, mode):
+    # --- REGIME PROBABILITIES ---
+    net_gex = out["gex"].sum()
+    flip = find_gamma_flip(out)
+
+    regime_probs = {}
+
+    if flip:
+        dist = (S - flip) / S
+        p_above = norm.cdf(dist * 4)
+        regime_probs = {
+            "aboveFlip": round(p_above, 3),
+            "belowFlip": round(1 - p_above, 3)
+        }
+    else:
+        p_stable = norm.cdf(net_gex / 1e6)
+        regime_probs = {
+            "stable": round(p_stable, 3),
+            "trend": round(1 - p_stable, 3)
+        }
+
+    st.write("Regime Probabilities", regime_probs)
+
+    return out
+
+
+def find_gamma_flip(df):
     if df.empty:
         return None
 
-    val_col = mode.lower()
-    pivot = df.pivot_table(index='strike', columns='expiry', values=val_col, aggfunc='sum', fill_value=0).sort_index(ascending=False)
+    strike_sums = df.groupby("strike")["gex"].sum().sort_index()
 
-    z_raw = pivot.values
-    x_labs = pivot.columns.tolist()
-    y_labs = pivot.index.tolist()
-    if not y_labs:
-        return None
+    for i in range(len(strike_sums) - 1):
+        if strike_sums.iloc[i] * strike_sums.iloc[i + 1] < 0:
+            return strike_sums.index[i]
 
-    closest_strike = min(y_labs, key=lambda x: abs(x - S))
+    return None
 
-    # Build hover text
-    h_text = []
-    for i, strike in enumerate(y_labs):
-        row = []
-        for j, exp in enumerate(x_labs):
-            val = z_raw[i, j]
-            prefix = "-" if val < 0 else ""
-            v_abs = abs(val)
-            if v_abs >= 1e6:
-                formatted = f"{prefix}${v_abs/1e6:,.2f}M"
-            elif v_abs >= 1e3:
-                formatted = f"{prefix}${v_abs/1e3:,.1f}K"
-            else:
-                formatted = f"{prefix}${v_abs:,.0f}"
-            note = " (per 1% IV)" if mode == "VEX" else ""
-            row.append(f"Strike: ${strike:,.0f}<br>Expiry: {exp}<br>{mode}: {formatted}{note}")
-        h_text.append(row)
+# -------------------------
+# RENDERING (YOUR STUDY)
+# -------------------------
 
-    max_abs = np.max(np.abs(z_raw)) if z_raw.size else 1.0
-    if max_abs == 0:
-        max_abs = 1.0
-    zmin = -max_abs
-    zmax = max_abs
+def render_heatmap(df, ticker, S, mode, flip_strike):
+    pivot = df.pivot_table(index="strike", columns="expiry", values="gex", aggfunc="sum")
+    pivot = pivot.sort_index(ascending=False)
 
-    colorscale = [
-        [0.00, "#221557"],
-        [0.10, '#260446'],
-        [0.25, '#56117a'],
-        [0.40, '#6E298A'],
-        [0.49, '#783F8F'],
-        [0.50, '#224B8B'],
-        [0.52, '#32A7A7'],
-        [0.65, '#39B481'],
-        [0.80, '#A8D42A'],
-        [0.92, '#FFDF4A'],
-        [1.00, '#F1F50C']
-    ]
-    
     fig = go.Figure(data=go.Heatmap(
-        z=z_raw, x=x_labs, y=y_labs, text=h_text, hoverinfo="text",
-        colorscale=colorscale, zmin=zmin, zmax=zmax, zmid=0, showscale=True,
-        colorbar=dict(title=dict(text=f"{mode} ($)"), tickformat=",.0s")
+        z=pivot.values,
+        x=pivot.columns.tolist(),
+        y=pivot.index.tolist(),
+        colorscale=CUSTOM_COLORSCALE,
+        zmid=0
     ))
 
-    # FIXED: Text color based purely on sign
-    max_abs_val = np.max(np.abs(z_raw)) if z_raw.size else 0
-    for i, strike in enumerate(y_labs):
-        for j, exp in enumerate(x_labs):
-            val = z_raw[i, j]
-            if abs(val) < 500:
-                continue
-            prefix = "-" if val < 0 else ""
-            txt = f"{prefix}${abs(val)/1e3:,.0f}K"
-            if abs(val) == max_abs_val and max_abs_val > 0:
-                txt += " ⭐"
-
-            text_color = "black" if val >= 0 else "white"  # ← This is the fix
-
-            fig.add_annotation(
-                x=exp, y=strike, text=txt, showarrow=False,
-                font=dict(color=text_color, size=11, family="Arial"),
-                xref="x", yref="y"
-            )
-
-    # Spot strike highlight (unchanged)
-    sorted_strikes = sorted(y_labs)
-    strike_diffs = np.diff(sorted_strikes) if len(sorted_strikes) > 1 else np.array([sorted_strikes[0] * 0.05])
-    padding = (strike_diffs[0] * 0.45) if len(strike_diffs) > 0 else 2.5
-
-    fig.add_shape(type="rect", xref="paper", yref="y", x0=-0.08, x1=1.0, 
-                  y0=closest_strike - padding, y1=closest_strike + padding, 
-                  fillcolor="rgba(255, 51, 51, 0.25)", line=dict(width=0), layer="below")
-
-    fig.update_layout(
-        title=f"{ticker} {mode} | Spot: ${S:,.2f}",
-        template="plotly_dark", 
-        height=700, 
-        xaxis=dict(type='category', side='top', tickfont=dict(size=11)), 
-        yaxis=dict(title="Strike", tickfont=dict(size=11), autorange=True, 
-                   tickmode='array', tickvals=y_labs, 
-                   ticktext=[f"<b>{s:,.0f}</b>" if s == closest_strike else f"{s:,.0f}" for s in y_labs]), 
-        margin=dict(l=70, r=50, t=80, b=30)
-    )
-
     return fig
+
 # -------------------------
-# Main App
+# MAIN
 # -------------------------
+
 def main():
-    st.markdown(
-        "<div style='text-align:center; margin-top:6px;'><h2 style='font-size:18px; margin:10px 0 6px 0; font-weight:600;'>📈 GEX / VEX Pro</h2></div>",
-        unsafe_allow_html=True,
-    )
+    c1, c2, c3 = st.columns([1.5, 1, 1])
+    ticker = c1.text_input("Ticker", value="SPX").upper().strip()
+    max_exp = c2.number_input("Expiries", 1, 15, 5)
+    s_range = c3.number_input("Strike ±", 5, 500, 80)
 
-    # Compact toolbar
-    col1, col2, col3, col4 = st.columns([1.5, 0.8, 0.8, 0.6])
-    with col1:
-        ticker = st.text_input("Ticker", "SPY", key="ticker_compact").upper().strip()
-    
-    # Set defaults based on ticker
-    is_spx = ticker in ["SPX", "^SPX", "SPXW", "^SPXW"]
-    default_exp = 5
-    default_range = 80 if is_spx else 25
-    
-    with col2:
-        max_exp = st.number_input("Max Exp", min_value=1, max_value=15, value=default_exp, step=1, key="maxexp_compact")
-    with col3:
-        s_range = st.number_input("Strike ±", min_value=5, max_value=200, value=default_range, step=5, key="srange_compact")
-    with col4:
-        run = st.button("Run", type="primary", key="run_compact")
+    if st.button("🔄 Run Enhanced"):
+        S, raw_df = fetch_data(ticker, max_exp)
+        df = process_exposure_enhanced(raw_df, S, s_range)
 
-    if run:
-        with st.spinner(f"Analyzing {ticker}..."):
-            S, raw_df = fetch_data_safe(ticker, int(max_exp))
+        st.plotly_chart(render_heatmap(df, ticker, S, "GEX", None))
 
-        if S and raw_df is not None and not raw_df.empty:
-            processed = process_exposure(raw_df, S, s_range)
-
-            if not processed.empty:
-                t_gex = processed["gex"].sum() / 1e9
-                t_vex = processed["vex"].sum() / 1e9
-
-                p_g = "-" if t_gex < 0 else ""
-                p_v = "-" if t_vex < 0 else ""
-
-                c1, c2 = st.columns(2)
-                c1.metric("Net Dealer GEX", f"{p_g}${abs(t_gex):,.2f}B")
-                c2.metric("Net Dealer VEX (per 1% IV)", f"{p_v}${abs(t_vex):,.2f}B")
-
-                st.markdown("---")
-                
-                # Render both GEX and VEX side by side
-                col_gex, col_vex = st.columns(2)
-                
-                with col_gex:
-                    st.markdown("### GEX Exposure")
-                    gex_fig = render_plot(processed, ticker, S, "GEX")
-                    if gex_fig:
-                        st.plotly_chart(gex_fig, width="stretch")
-                    else:
-                        st.warning("No GEX data to display")
-                
-                with col_vex:
-                    st.markdown("### VEX Exposure")
-                    vex_fig = render_plot(processed, ticker, S, "VEX")
-                    if vex_fig:
-                        st.plotly_chart(vex_fig, width="stretch")
-                    else:
-                        st.warning("No VEX data to display")
-                        
-            else:
-                st.warning("No data found in range. Check if market is open or broaden strike range.")
-        else:
-            st.error("Fetch failed. Try manually entering ^SPXW for SPX 0DTE.")
 
 if __name__ == "__main__":
     main()
