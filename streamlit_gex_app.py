@@ -94,13 +94,27 @@ def process_exposure(df, S, strikes_count):
     df['expiry_dt'] = pd.to_datetime(df['expiration_date'])
     df['T'] = np.maximum((df['expiry_dt'] - pd.Timestamp.now()).dt.total_seconds() / (365*24*3600), 1e-5)
     
+    # Calculate d1 and d2 for Black-Scholes Greeks
     d1 = (np.log(S / df['strike']) + (RISK_FREE_RATE + 0.5 * df['iv']**2) * df['T']) / (df['iv'] * np.sqrt(df['T']))
-    df['gamma_bs'] = norm.pdf(d1) / (S * df['iv'] * np.sqrt(df['T']))
-    df['vanna_bs'] = -norm.pdf(d1) * ((d1 - df['iv'] * np.sqrt(df['T'])) / df['iv'])
+    d2 = d1 - df['iv'] * np.sqrt(df['T'])
     
-    df['side'] = np.where(df['option_type'].str.lower() == 'call', 1, -1)
-    df['gex'] = df['side'] * (df['gamma_bs'] * (S**2) * 0.01) * df['open_interest'] * 100
-    df['vex'] = -1 * df['vanna_bs'] * S * 100 * df['open_interest']
+    # Gamma (same for calls and puts, always positive)
+    df['gamma_bs'] = norm.pdf(d1) / (S * df['iv'] * np.sqrt(df['T']))
+    
+    # Vanna (corrected formula): dGamma/dVol
+    # Vanna = -φ(d1) * d2 / (S * σ * √T)
+    df['vanna_bs'] = -norm.pdf(d1) * d2 / (S * df['iv'] * np.sqrt(df['T']))
+    
+    # GEX from DEALER perspective (dealers short options to customers)
+    # Negative GEX = dealers short gamma (destabilizing, need to hedge dynamically)
+    # Positive GEX = dealers long gamma (stabilizing)
+    # Gamma is always positive, so we flip sign for dealer perspective
+    df['gex'] = -1 * df['gamma_bs'] * (S**2) * 0.01 * df['open_interest'] * 100
+    
+    # VEX from DEALER perspective  
+    # Represents change in delta per 1 vol point change
+    # Scaled by 1% spot move for consistency with GEX
+    df['vex'] = -1 * df['vanna_bs'] * S * 0.01 * df['open_interest'] * 100
     
     return df
 
@@ -295,6 +309,25 @@ def render_diagnostics(df):
 
 def main():
     st.title("GEX & VEX: Weekend-Free Surface")
+    
+    # Add explanation
+    with st.expander("ℹ️ Understanding GEX & VEX"):
+        st.markdown("""
+        **Dealer Gamma Exposure (GEX)**
+        - **Negative GEX**: Dealers are short gamma → must buy rallies and sell dips (destabilizing)
+        - **Positive GEX**: Dealers are long gamma → sell rallies and buy dips (stabilizing)
+        - **Zero GEX**: Gamma neutral, potential pivot point
+        
+        **Dealer Vanna Exposure (VEX)**
+        - **Positive VEX**: Rising volatility causes dealers to buy spot
+        - **Negative VEX**: Rising volatility causes dealers to sell spot
+        
+        **Key Levels**
+        - **Call Wall**: Largest positive GEX strike (resistance)
+        - **Put Wall**: Largest negative GEX strike (support)
+        - **Ceiling**: Lowest strike with positive GEX
+        - **Floor**: Highest strike with negative GEX
+        """)
     
     with st.sidebar:
         ticker = st.text_input("Ticker", "SPX").upper()
