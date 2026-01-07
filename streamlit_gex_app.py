@@ -148,14 +148,14 @@ def render_heatmap(df, S, metric, title):
     # 4. Fill missing values with 0
     pivot = pivot.fillna(0).sort_index(ascending=False)
     
-    # 4. Find max absolute value cell for star marker
+    # 5. Find max absolute value cell for star marker
     abs_vals = np.abs(pivot.values)
     if abs_vals.size > 0:
         max_idx = np.unravel_index(np.argmax(abs_vals), abs_vals.shape)
     else:
         max_idx = None
     
-    # 5. Create text with star on max value
+    # 6. Create text with star on max value
     text_values = []
     for i in range(len(pivot.index)):
         row_text = []
@@ -199,7 +199,7 @@ def render_heatmap(df, S, metric, title):
             title="Strike",
             tickmode='linear',
             tick0=pivot.index.min(),
-            dtick=max(1, (pivot.index.max() - pivot.index.min()) / 40)  # Show all strikes
+            dtick=max(1, (pivot.index.max() - pivot.index.min()) / 40)
         )
     )
     return fig
@@ -238,7 +238,7 @@ def render_gex_concentration(df, S):
     
     fig.add_trace(go.Bar(
         y=gex_by_strike.index,
-        x=gex_by_strike.values / 1000,  # Convert to thousands
+        x=gex_by_strike.values / 1000,
         orientation='h',
         marker=dict(color=colors),
         text=[format_thousands(v) for v in gex_by_strike.values],
@@ -275,7 +275,20 @@ def render_gex_concentration(df, S):
     
     fig.update_layout(
         title="GEX Concentration by Strike",
-        xaxis_title="GEX (
+        xaxis_title="GEX ($'000s)",
+        yaxis_title="Strike",
+        height=700,
+        template="plotly_dark",
+        showlegend=False,
+        annotations=annotations,
+        yaxis=dict(
+            tickmode='array',
+            tickvals=gex_by_strike.index,
+            ticktext=[f"{strike:.0f}" for strike in gex_by_strike.index]
+        )
+    )
+    
+    return fig
 
 def render_diagnostics(df, S):
     """Render calls and puts side by side with net calculations"""
@@ -302,7 +315,7 @@ def render_diagnostics(df, S):
             calls_display = calls[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('strike', ascending=False)
             calls_display['gex'] = calls_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
             calls_display['vex'] = calls_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
-            st.dataframe(calls_display, use_container_width=True, height=400)
+            st.dataframe(calls_display, width='stretch', height=400)
         else:
             st.info("No call data")
     
@@ -312,7 +325,7 @@ def render_diagnostics(df, S):
             puts_display = puts[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('strike', ascending=False)
             puts_display['gex'] = puts_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
             puts_display['vex'] = puts_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
-            st.dataframe(puts_display, use_container_width=True, height=400)
+            st.dataframe(puts_display, width='stretch', height=400)
         else:
             st.info("No put data")
     
@@ -323,7 +336,7 @@ def render_diagnostics(df, S):
         net_display['vex_fmt'] = net_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
         st.dataframe(
             net_display[['gex_fmt', 'vex_fmt']].rename(columns={'gex_fmt': 'Net GEX', 'vex_fmt': 'Net VEX'}),
-            use_container_width=True,
+            width='stretch',
             height=400
         )
 
@@ -380,125 +393,6 @@ def main():
                 
                 with t4:
                     render_diagnostics(df, S)
-            else:
-                st.error("No data available after processing")
-        else:
-            st.error("Failed to fetch data")
-
-if __name__ == "__main__":
-    main()
-000s)",
-        yaxis_title="Strike",
-        height=700,
-        template="plotly_dark",
-        showlegend=False,
-        annotations=annotations,
-        yaxis=dict(
-            tickmode='array',
-            tickvals=gex_by_strike.index,
-            ticktext=[f"{strike:.0f}" for strike in gex_by_strike.index]
-        )
-    )
-    
-    return fig
-
-def render_diagnostics(df):
-    """Render calls and puts side by side with net calculations"""
-    if df.empty: return None
-    
-    # Separate calls and puts
-    calls = df[df['option_type'].str.lower() == 'call'].copy()
-    puts = df[df['option_type'].str.lower() == 'put'].copy()
-    
-    # Calculate net values
-    net_gex = df.groupby('strike')[['gex', 'vex']].sum()
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.subheader("📞 Calls")
-        if not calls.empty:
-            calls_display = calls[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('gex', ascending=False)
-            calls_display['gex'] = calls_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
-            calls_display['vex'] = calls_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
-            st.dataframe(calls_display, use_container_width=True, height=400)
-        else:
-            st.info("No call data")
-    
-    with col2:
-        st.subheader("📉 Puts")
-        if not puts.empty:
-            puts_display = puts[['expiration_date', 'strike', 'gex', 'vex', 'open_interest', 'iv']].sort_values('gex')
-            puts_display['gex'] = puts_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
-            puts_display['vex'] = puts_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
-            st.dataframe(puts_display, use_container_width=True, height=400)
-        else:
-            st.info("No put data")
-    
-    with col3:
-        st.subheader("🎯 Net by Strike")
-        net_display = net_gex.copy()
-        net_display['gex_fmt'] = net_display['gex'].apply(lambda x: f"{x/1000:,.0f}K")
-        net_display['vex_fmt'] = net_display['vex'].apply(lambda x: f"{x/1000:,.0f}K")
-        st.dataframe(
-            net_display[['gex_fmt', 'vex_fmt']].rename(columns={'gex_fmt': 'Net GEX', 'vex_fmt': 'Net VEX'}),
-            use_container_width=True,
-            height=400
-        )
-
-def main():
-    st.title("GEX & VEX: Weekend-Free Surface")
-    
-    # Add explanation
-    with st.expander("ℹ️ Understanding GEX & VEX"):
-        st.markdown("""
-        **Dealer Gamma Exposure (GEX)**
-        - **Negative GEX**: Dealers are short gamma → must buy rallies and sell dips (destabilizing)
-        - **Positive GEX**: Dealers are long gamma → sell rallies and buy dips (stabilizing)
-        - **Zero GEX**: Gamma neutral, potential pivot point
-        
-        **Dealer Vanna Exposure (VEX)**
-        - **Positive VEX**: Rising volatility causes dealers to buy spot
-        - **Negative VEX**: Rising volatility causes dealers to sell spot
-        
-        **Key Levels**
-        - **Call Wall**: Largest positive GEX strike (resistance)
-        - **Put Wall**: Largest negative GEX strike (support)
-        - **Ceiling**: Lowest strike with positive GEX
-        - **Floor**: Highest strike with negative GEX
-        """)
-    
-    with st.sidebar:
-        ticker = st.text_input("Ticker", "SPX").upper()
-        strike_depth = st.select_slider("Strikes", options=[25, 40, 50, 80, 100, 150], value=80 if ticker=="SPX" else 40)
-        max_exp = st.number_input("Expiries", 1, 15, 5)
-        run = st.button("Calculate", type="primary")
-
-    if run:
-        S, raw_df = fetch_data(ticker, max_exp)
-        if raw_df is not None and S is not None:
-            df = process_exposure(raw_df, S, strike_depth)
-            
-            if not df.empty:
-                t1, t2, t3, t4 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "GEX Concentration", "Diagnostics"])
-                
-                with t1:
-                    fig = render_heatmap(df, S, 'gex', f"{ticker} Gamma ($'000s)")
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                with t2:
-                    fig = render_heatmap(df, S, 'vex', f"{ticker} Vanna ($'000s)")
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                with t3:
-                    fig = render_gex_concentration(df)
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                with t4:
-                    render_diagnostics(df)
             else:
                 st.error("No data available after processing")
         else:
